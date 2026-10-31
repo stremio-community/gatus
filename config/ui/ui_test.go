@@ -53,8 +53,12 @@ func TestConfig_ValidateAndSetDefaults(t *testing.T) {
 		if cfg.LoginSubtitle != defaultLoginSubtitle {
 			t.Errorf("expected LoginSubtitle to be %s, got %s", defaultLoginSubtitle, cfg.LoginSubtitle)
 		}
+		if *cfg.HeaderSubtitle != defaultHeaderSubtitle {
+			t.Errorf("expected HeaderSubtitle to be %s, got %s", defaultHeaderSubtitle, *cfg.HeaderSubtitle)
+		}
 	})
 	t.Run("custom-values", func(t *testing.T) {
+		customHeaderSubtitle := "Custom Subtitle"
 		cfg := &Config{
 			Title:               "Custom Title",
 			Description:         "Custom Description",
@@ -66,6 +70,7 @@ func TestConfig_ValidateAndSetDefaults(t *testing.T) {
 			DefaultSortBy:       "health",
 			DefaultFilterBy:     "failing",
 			LoginSubtitle:       "Welcome",
+			HeaderSubtitle:      &customHeaderSubtitle,
 		}
 		if err := cfg.ValidateAndSetDefaults(); err != nil {
 			t.Error("expected no error, got", err.Error())
@@ -100,6 +105,9 @@ func TestConfig_ValidateAndSetDefaults(t *testing.T) {
 		if cfg.LoginSubtitle != "Welcome" {
 			t.Errorf("expected LoginSubtitle to be preserved, got %s", cfg.LoginSubtitle)
 		}
+		if *cfg.HeaderSubtitle != customHeaderSubtitle {
+			t.Errorf("expected HeaderSubtitle to be preserved, got %s", *cfg.HeaderSubtitle)
+		}
 	})
 	t.Run("partial-custom-values", func(t *testing.T) {
 		cfg := &Config{
@@ -130,6 +138,17 @@ func TestConfig_ValidateAndSetDefaults(t *testing.T) {
 			t.Errorf("expected LoginSubtitle to use default, got %s", cfg.LoginSubtitle)
 		}
 	})
+}
+
+func TestConfig_ValidateAndSetDefaults_EmptyHeaderSubtitle(t *testing.T) {
+	emptyHeaderSubtitle := ""
+	cfg := &Config{HeaderSubtitle: &emptyHeaderSubtitle}
+	if err := cfg.ValidateAndSetDefaults(); err != nil {
+		t.Error("expected no error, got", err.Error())
+	}
+	if *cfg.HeaderSubtitle != "" {
+		t.Errorf("expected empty HeaderSubtitle to be preserved, got %s", *cfg.HeaderSubtitle)
+	}
 }
 
 func TestButton_Validate(t *testing.T) {
@@ -193,6 +212,9 @@ func TestGetDefaultConfig(t *testing.T) {
 	}
 	if defaultConfig.LoginSubtitle != defaultLoginSubtitle {
 		t.Error("expected GetDefaultConfig() to return defaultLoginSubtitle, got", defaultConfig.LoginSubtitle)
+	}
+	if *defaultConfig.HeaderSubtitle != defaultHeaderSubtitle {
+		t.Error("expected GetDefaultConfig() to return defaultHeaderSubtitle, got", *defaultConfig.HeaderSubtitle)
 	}
 }
 

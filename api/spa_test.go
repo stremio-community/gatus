@@ -18,6 +18,7 @@ import (
 func TestSinglePageApplication(t *testing.T) {
 	defer store.Get().Clear()
 	defer cache.Clear()
+	headerSubtitle := "example-subtitle"
 	cfg := &config.Config{
 		Metrics: true,
 		Endpoints: []*endpoint.Endpoint{
@@ -31,7 +32,8 @@ func TestSinglePageApplication(t *testing.T) {
 			},
 		},
 		UI: &ui.Config{
-			Title: "example-title",
+			Title:          "example-title",
+			HeaderSubtitle: &headerSubtitle,
 		},
 	}
 	watchdog.UpdateEndpointStatus(cfg.Endpoints[0], &endpoint.Result{Success: true, Duration: time.Millisecond, Timestamp: time.Now()})
@@ -95,6 +97,9 @@ func TestSinglePageApplication(t *testing.T) {
 			strBody := string(body)
 			if !strings.Contains(strBody, cfg.UI.Title) {
 				t.Errorf("%s %s should have contained the title", request.Method, request.URL)
+			}
+			if !strings.Contains(strBody, `headerSubtitle: "example-subtitle"`) {
+				t.Errorf("%s %s should have contained the header subtitle", request.Method, request.URL)
 			}
 			if scenario.ExpectedDarkTheme && !strings.Contains(strBody, "class=\"dark\"") {
 				t.Errorf("%s %s should have responded with dark mode headers", request.Method, request.URL)

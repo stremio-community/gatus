@@ -27,7 +27,8 @@ const (
 )
 
 var (
-	defaultDarkMode = true
+	defaultDarkMode       = true
+	defaultHeaderSubtitle = "System Monitoring Dashboard"
 
 	ErrButtonValidationFailed = errors.New("invalid button configuration: missing required name or link")
 	ErrInvalidDefaultSortBy   = errors.New("invalid default-sort-by value: must be 'name', 'group', or 'health'")
@@ -41,6 +42,7 @@ type Config struct {
 	DashboardHeading        string   `yaml:"dashboard-heading,omitempty"`      // Dashboard Title between header and endpoints
 	DashboardSubheading     string   `yaml:"dashboard-subheading,omitempty"`   // Dashboard Description between header and endpoints
 	Header                  string   `yaml:"header,omitempty"`                 // Header is the text at the top of the page
+	HeaderSubtitle          *string  `yaml:"header-subtitle,omitempty"`        // HeaderSubtitle is the text below the header, hidden when empty
 	Logo                    string   `yaml:"logo,omitempty"`                   // Logo to display on the page
 	Link                    string   `yaml:"link,omitempty"`                   // Link to open when clicking on the logo
 	Favicon                 Favicon  `yaml:"favicon,omitempty"`                // Favourite icon to display in web browser tab or address bar
@@ -91,6 +93,7 @@ func GetDefaultConfig() *Config {
 		DashboardHeading:       defaultDashboardHeading,
 		DashboardSubheading:    defaultDashboardSubheading,
 		Header:                 defaultHeader,
+		HeaderSubtitle:         &defaultHeaderSubtitle,
 		Logo:                   defaultLogo,
 		Link:                   defaultLink,
 		CustomCSS:              defaultCustomCSS,
@@ -123,6 +126,9 @@ func (cfg *Config) ValidateAndSetDefaults() error {
 	}
 	if len(cfg.Header) == 0 {
 		cfg.Header = defaultHeader
+	}
+	if cfg.HeaderSubtitle == nil {
+		cfg.HeaderSubtitle = &defaultHeaderSubtitle
 	}
 	if len(cfg.Logo) == 0 {
 		cfg.Logo = defaultLogo

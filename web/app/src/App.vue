@@ -35,8 +35,8 @@
                 </div>
                 <div>
                   <h1 class="text-2xl font-bold tracking-tight">{{ header }}</h1>
-                  <p v-if="buttons && buttons.length" class="text-sm text-muted-foreground">
-                    System Monitoring Dashboard
+                  <p v-if="headerSubtitle && buttons && buttons.length" class="text-sm text-muted-foreground">
+                    {{ headerSubtitle }}
                   </p>
                 </div>
               </component>
@@ -186,6 +186,10 @@ const logo = computed(() => {
 
 const header = computed(() => {
   return window.config && window.config.header && window.config.header !== '{{ .UI.Header }}' ? window.config.header : "Gatus"
+})
+
+const headerSubtitle = computed(() => {
+  return window.config && typeof window.config.headerSubtitle === 'string' && window.config.headerSubtitle !== '{{ .UI.HeaderSubtitle }}' ? window.config.headerSubtitle : "System Monitoring Dashboard"
 })
 
 const link = computed(() => {
