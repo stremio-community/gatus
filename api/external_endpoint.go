@@ -27,6 +27,15 @@ const (
 
 	// maximumHostnameLengthPerPush is the maximum length of a DNS name
 	maximumHostnameLengthPerPush = 253
+
+	// maximumNumberOfDetailsPerConditionResult is the maximum number of details that may be pushed alongside a single condition result
+	maximumNumberOfDetailsPerConditionResult = 20
+
+	// maximumDetailLabelLength is the maximum length of the label of a single condition result detail
+	maximumDetailLabelLength = 64
+
+	// maximumDetailValueLength is the maximum length of the value of a single condition result detail
+	maximumDetailValueLength = 512
 )
 
 // externalEndpointResultRequestBody is the optional JSON body that may be sent when pushing the result of an
@@ -103,6 +112,9 @@ func CreateExternalEndpointResult(cfg *config.Config) fiber.Handler {
 				if len(conditionResult.Condition) > maximumConditionLengthPerPush {
 					return c.Status(400).SendString(fmt.Sprintf("conditionResults[].condition must not exceed %d characters", maximumConditionLengthPerPush))
 				}
+				if err := validateConditionResultDetails(conditionResult.Details); err != nil {
+					return c.Status(400).SendString(err.Error())
+				}
 			}
 			result.ConditionResults = requestBody.ConditionResults
 		}
@@ -141,4 +153,22 @@ func CreateExternalEndpointResult(cfg *config.Config) fiber.Handler {
 		// Return the result
 		return c.Status(200).SendString("")
 	}
+}
+
+func validateConditionResultDetails(details []*endpoint.ConditionResultDetail) error {
+	if len(details) > maximumNumberOfDetailsPerConditionResult {
+		return fmt.Errorf("too many conditionResults[].details: maximum is %d", maximumNumberOfDetailsPerConditionResult)
+	}
+	for _, detail := range details {
+		if detail == nil || len(strings.TrimSpace(detail.Label)) == 0 {
+			return errors.New("conditionResults[].details[].label must not be empty")
+		}
+		if len(detail.Label) > maximumDetailLabelLength {
+			return fmt.Errorf("conditionResults[].details[].label must not exceed %d characters", maximumDetailLabelLength)
+		}
+		if len(detail.Value) > maximumDetailValueLength {
+			return fmt.Errorf("conditionResults[].details[].value must not exceed %d characters", maximumDetailValueLength)
+		}
+	}
+	return nil
 }

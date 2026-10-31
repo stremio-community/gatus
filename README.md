@@ -379,12 +379,20 @@ POST /api/v1/endpoints/{key}/external?success=false
 {
   "conditionResults": [
     {"condition": "[STATUS] == 200", "success": true},
-    {"condition": "[RESPONSE_TIME] < 300", "success": false}
+    {
+      "condition": "[RESPONSE_TIME] < 300",
+      "success": false,
+      "details": [
+        {"label": "Request", "value": "GET /health"},
+        {"label": "Response time", "value": "512ms"}
+      ]
+    }
   ]
 }
 ```
 Where:
 - `conditionResults` (optional): the conditions that were evaluated on your end. Each entry requires a non-empty `condition` of at most 1024 characters and a `success` boolean, with a maximum of 50 entries per request.
+- `conditionResults[].details` (optional): label/value pairs explaining how the condition was evaluated, shown in pushed order in the result's details dialog on the dashboard. Each entry requires a non-empty `label` of at most 64 characters and a `value` of at most 512 characters, with a maximum of 20 entries per condition.
 
 The body is entirely optional: a request without one behaves exactly like it did before.
 Note that condition results are for display purposes only: `{success}` remains the source of truth for the health of the endpoint, regardless of whether any of the conditions you pushed failed.
