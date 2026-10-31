@@ -79,6 +79,9 @@
             <span class="break-all">{{ conditionResult.condition }}</span>
           </div>
         </div>
+        <Button v-if="isPersistent" variant="outline" size="sm" class="mt-2 w-full" @click="$emit('showDetails', result)">
+          View details
+        </Button>
       </div>
       
       <!-- Errors -->
@@ -98,6 +101,7 @@
 import { ref, watch, nextTick, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { prettifyTimestamp } from '@/utils/time'
+import { Button } from '@/components/ui/button'
 
 const route = useRoute()
 
@@ -115,6 +119,8 @@ const props = defineProps({
     default: false
   }
 })
+
+defineEmits(['showDetails'])
 
 // State
 const hidden = ref(true)
