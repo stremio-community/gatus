@@ -80,7 +80,8 @@ func (s *Store) createPostgresSchema() error {
 			endpoint_result_condition_id  BIGSERIAL PRIMARY KEY,
 			endpoint_result_id            BIGINT  NOT NULL REFERENCES endpoint_results(endpoint_result_id) ON DELETE CASCADE,
 			condition                     TEXT    NOT NULL,
-			success                       BOOLEAN NOT NULL
+			success                       BOOLEAN NOT NULL,
+			details                       TEXT
 		)
 	`)
 	if err != nil {
@@ -137,6 +138,8 @@ func (s *Store) createPostgresSchema() error {
 	_, _ = s.db.Exec(`ALTER TABLE endpoint_results ADD COLUMN IF NOT EXISTS suite_result_id BIGINT REFERENCES suite_results(suite_result_id) ON DELETE CASCADE`)
 	// Create index for suite_result_id
 	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS endpoint_results_suite_result_id_idx ON endpoint_results(suite_result_id)`)
+	// Add details to endpoint_result_conditions for condition results pushed with details
+	_, _ = s.db.Exec(`ALTER TABLE endpoint_result_conditions ADD COLUMN IF NOT EXISTS details TEXT`)
 	// Create index for endpoint_result_conditions
 	_, _ = s.db.Exec(`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_endpoint_result_conditions_endpoint_result_id ON endpoint_result_conditions (endpoint_result_id)`)
 	// Create index for endpoint_results

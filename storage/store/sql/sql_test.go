@@ -991,3 +991,65 @@ func TestStore_DropsLegacyEndpointNameGroupUniqueConstraint(t *testing.T) {
 		t.Errorf("expected migration to be idempotent, got: %s", err)
 	}
 }
+
+func TestStore_ConditionResultDetails(t *testing.T) {
+	store, _ := NewStore("sqlite", t.TempDir()+"/TestStore_ConditionResultDetails.db", false, storage.DefaultMaximumNumberOfResults, storage.DefaultMaximumNumberOfEvents)
+	defer store.Close()
+	// Simulate a legacy database whose endpoint_result_conditions table predates the details column.
+	if _, err := store.db.Exec(`DROP TABLE endpoint_result_conditions`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`CREATE TABLE endpoint_result_conditions (
+		endpoint_result_condition_id  INTEGER PRIMARY KEY,
+		endpoint_result_id            INTEGER NOT NULL REFERENCES endpoint_results(endpoint_result_id) ON DELETE CASCADE,
+		condition                     TEXT    NOT NULL,
+		success                       INTEGER NOT NULL
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	legacyResult := testSuccessfulResult
+	legacyResult.Timestamp = now.Add(-time.Minute)
+	legacyResult.ConditionResults = nil
+	if err := store.InsertEndpointResult(&testEndpoint, &legacyResult); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`INSERT INTO endpoint_result_conditions (endpoint_result_id, condition, success) SELECT endpoint_result_id, 'legacy', 1 FROM endpoint_results`); err != nil {
+		t.Fatal(err)
+	}
+	// Run the migration.
+	if err := store.createSchema(); err != nil {
+		t.Fatalf("migration failed: %s", err)
+	}
+	resultWithDetails := testUnsuccessfulResult
+	resultWithDetails.ConditionResults = []*endpoint.ConditionResult{
+		{
+			Condition: "stream: 0 of 12 valid",
+			Success:   false,
+			Details: []*endpoint.ConditionResultDetail{
+				{Label: "Attempt", Value: "WARP · HTTP 403"},
+				{Label: "Attempt", Value: "direct · HTTP 200"},
+			},
+		},
+	}
+	if err := store.InsertEndpointResult(&testEndpoint, &resultWithDetails); err != nil {
+		t.Fatal(err)
+	}
+	endpointStatus, err := store.GetEndpointStatusByKey(testEndpoint.Key(), paging.NewEndpointStatusParams().WithResults(1, 10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(endpointStatus.Results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(endpointStatus.Results))
+	}
+	legacy := endpointStatus.Results[0].ConditionResults
+	if len(legacy) != 1 || legacy[0].Condition != "legacy" || legacy[0].Details != nil {
+		t.Errorf("expected the legacy condition result to survive the migration without details, got %+v", legacy)
+	}
+	pushed := endpointStatus.Results[1].ConditionResults
+	if len(pushed) != 1 || len(pushed[0].Details) != 2 {
+		t.Fatalf("expected 1 condition result with 2 details, got %+v", pushed)
+	}
+	if *pushed[0].Details[0] != (endpoint.ConditionResultDetail{Label: "Attempt", Value: "WARP · HTTP 403"}) || *pushed[0].Details[1] != (endpoint.ConditionResultDetail{Label: "Attempt", Value: "direct · HTTP 200"}) {
+		t.Errorf("expected details in pushed order, got %+v, %+v", *pushed[0].Details[0], *pushed[0].Details[1])
+	}
+}

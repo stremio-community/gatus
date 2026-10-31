@@ -149,7 +149,9 @@
     </div>
 
     <!-- Tooltip -->
-    <Tooltip :result="tooltip.result" :event="tooltip.event" :isPersistent="tooltipIsPersistent" />
+    <Tooltip :result="tooltip.result" :event="tooltip.event" :isPersistent="tooltipIsPersistent" @showDetails="showResultDetails" />
+
+    <ResultDetailsModal v-if="detailsResult" :result="detailsResult" @close="detailsResult = null" />
   </div>
 </template>
 
@@ -161,6 +163,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import Social from './components/Social.vue'
 import Tooltip from './components/Tooltip.vue'
+import ResultDetailsModal from './components/ResultDetailsModal.vue'
 import Loading from './components/Loading.vue'
 
 const route = useRoute()
@@ -173,6 +176,7 @@ const tooltip = ref({})
 const mobileMenuOpen = ref(false)
 const isOidcLoading = ref(false)
 const tooltipIsPersistent = ref(false)
+const detailsResult = ref(null)
 let configInterval = null
 
 // Computed properties
@@ -229,6 +233,13 @@ const showTooltip = (result, event, action = 'hover') => {
       tooltip.value = { result, event }
     }
   }
+}
+
+const showResultDetails = (result) => {
+  detailsResult.value = result
+  tooltip.value = {}
+  tooltipIsPersistent.value = false
+  window.dispatchEvent(new CustomEvent('clear-data-point-selection'))
 }
 
 const handleDocumentClick = (event) => {

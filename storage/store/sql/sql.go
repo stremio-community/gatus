@@ -2,6 +2,7 @@ package sql
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -650,16 +651,43 @@ func (s *Store) insertEndpointResultWithSuiteID(tx *sql.Tx, endpointID int64, re
 func (s *Store) insertConditionResults(tx *sql.Tx, endpointResultID int64, conditionResults []*endpoint.ConditionResult) error {
 	var err error
 	for _, cr := range conditionResults {
-		_, err = tx.Exec("INSERT INTO endpoint_result_conditions (endpoint_result_id, condition, success) VALUES ($1, $2, $3)",
+		var details sql.NullString
+		if details, err = marshalConditionResultDetails(cr.Details); err != nil {
+			return err
+		}
+		_, err = tx.Exec("INSERT INTO endpoint_result_conditions (endpoint_result_id, condition, success, details) VALUES ($1, $2, $3, $4)",
 			endpointResultID,
 			cr.Condition,
 			cr.Success,
+			details,
 		)
 		if err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func marshalConditionResultDetails(details []*endpoint.ConditionResultDetail) (sql.NullString, error) {
+	if len(details) == 0 {
+		return sql.NullString{}, nil
+	}
+	encoded, err := json.Marshal(details)
+	if err != nil {
+		return sql.NullString{}, err
+	}
+	return sql.NullString{String: string(encoded), Valid: true}, nil
+}
+
+func unmarshalConditionResultDetails(details sql.NullString) ([]*endpoint.ConditionResultDetail, error) {
+	if !details.Valid {
+		return nil, nil
+	}
+	var decoded []*endpoint.ConditionResultDetail
+	if err := json.Unmarshal([]byte(details.String), &decoded); err != nil {
+		return nil, err
+	}
+	return decoded, nil
 }
 
 func (s *Store) updateEndpointUptime(tx *sql.Tx, endpointID int64, result *endpoint.Result) error {
@@ -827,7 +855,7 @@ func (s *Store) getEndpointResultsByEndpointID(tx *sql.Tx, endpointID int64, pag
 	}
 	// Get condition results
 	args := make([]interface{}, 0, len(idResultMap))
-	query := `SELECT endpoint_result_id, condition, success
+	query := `SELECT endpoint_result_id, condition, success, details
 				FROM endpoint_result_conditions
 				WHERE endpoint_result_id IN (`
 	index := 1
@@ -845,7 +873,11 @@ func (s *Store) getEndpointResultsByEndpointID(tx *sql.Tx, endpointID int64, pag
 	for rows.Next() {
 		conditionResult := &endpoint.ConditionResult{}
 		var endpointResultID int64
-		if err = rows.Scan(&endpointResultID, &conditionResult.Condition, &conditionResult.Success); err != nil {
+		var details sql.NullString
+		if err = rows.Scan(&endpointResultID, &conditionResult.Condition, &conditionResult.Success, &details); err != nil {
+			return
+		}
+		if conditionResult.Details, err = unmarshalConditionResultDetails(details); err != nil {
 			return
 		}
 		idResultMap[endpointResultID].ConditionResults = append(idResultMap[endpointResultID].ConditionResults, conditionResult)
@@ -1561,7 +1593,7 @@ func (s *Store) getSuiteResults(tx *sql.Tx, suiteID int64, page, pageSize int) (
 		// Fetch condition results for all endpoint results in this suite result
 		if len(epResultMap) > 0 {
 			args := make([]interface{}, 0, len(epResultMap))
-			condQuery := `SELECT endpoint_result_id, condition, success
+			condQuery := `SELECT endpoint_result_id, condition, success, details
 						  FROM endpoint_result_conditions
 						  WHERE endpoint_result_id IN (`
 			index := 1
@@ -1581,9 +1613,13 @@ func (s *Store) getSuiteResults(tx *sql.Tx, suiteID int64, page, pageSize int) (
 					condCount++
 					conditionResult := &endpoint.ConditionResult{}
 					var epResultID int64
-					if err = condRows.Scan(&epResultID, &conditionResult.Condition, &conditionResult.Success); err != nil {
+					var details sql.NullString
+					if err = condRows.Scan(&epResultID, &conditionResult.Condition, &conditionResult.Success, &details); err != nil {
 						logr.Errorf("[sql.getSuiteResults] Failed to scan condition result: %s", err.Error())
 						continue
+					}
+					if conditionResult.Details, err = unmarshalConditionResultDetails(details); err != nil {
+						logr.Errorf("[sql.getSuiteResults] Failed to decode condition result details: %s", err.Error())
 					}
 					if epResult, exists := epResultMap[epResultID]; exists {
 						epResult.ConditionResults = append(epResult.ConditionResults, conditionResult)

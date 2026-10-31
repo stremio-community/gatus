@@ -83,7 +83,8 @@ func (s *Store) createSQLiteSchema() error {
 			endpoint_result_condition_id  INTEGER PRIMARY KEY,
 			endpoint_result_id            INTEGER NOT NULL REFERENCES endpoint_results(endpoint_result_id) ON DELETE CASCADE,
 			condition                     TEXT    NOT NULL,
-			success                       INTEGER NOT NULL
+			success                       INTEGER NOT NULL,
+			details                       TEXT
 		)
 	`)
 	if err != nil {
@@ -146,6 +147,8 @@ func (s *Store) createSQLiteSchema() error {
 	_, _ = s.db.Exec(`ALTER TABLE endpoint_results ADD domain_expiration INTEGER NOT NULL DEFAULT 0`)
 	// Add suite_result_id to endpoint_results table for suite endpoint linkage
 	_, _ = s.db.Exec(`ALTER TABLE endpoint_results ADD suite_result_id INTEGER REFERENCES suite_results(suite_result_id) ON DELETE CASCADE`)
+	// Add details to endpoint_result_conditions for condition results pushed with details
+	_, _ = s.db.Exec(`ALTER TABLE endpoint_result_conditions ADD details TEXT`)
 	// Create index for suite_result_id
 	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS endpoint_results_suite_result_id_idx ON endpoint_results(suite_result_id)`)
 	// Note: SQLite doesn't support DROP COLUMN in older versions, so we skip this cleanup

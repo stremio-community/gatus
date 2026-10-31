@@ -159,6 +159,41 @@ func TestCreateExternalEndpointResult(t *testing.T) {
 			ExpectedCode:                   400,
 		},
 		{
+			Name:                           "null-condition-result-detail",
+			Path:                           "/api/v1/endpoints/g_n/external?success=true",
+			Body:                           `{"conditionResults":[{"condition":"c","success":true,"details":[null]}]}`,
+			AuthorizationHeaderBearerToken: "Bearer token",
+			ExpectedCode:                   400,
+		},
+		{
+			Name:                           "blank-condition-result-detail-label",
+			Path:                           "/api/v1/endpoints/g_n/external?success=true",
+			Body:                           `{"conditionResults":[{"condition":"c","success":true,"details":[{"label":" ","value":"v"}]}]}`,
+			AuthorizationHeaderBearerToken: "Bearer token",
+			ExpectedCode:                   400,
+		},
+		{
+			Name:                           "condition-result-detail-label-too-long",
+			Path:                           "/api/v1/endpoints/g_n/external?success=true",
+			Body:                           `{"conditionResults":[{"condition":"c","success":true,"details":[{"label":"` + strings.Repeat("a", maximumDetailLabelLength+1) + `","value":"v"}]}]}`,
+			AuthorizationHeaderBearerToken: "Bearer token",
+			ExpectedCode:                   400,
+		},
+		{
+			Name:                           "condition-result-detail-value-too-long",
+			Path:                           "/api/v1/endpoints/g_n/external?success=true",
+			Body:                           `{"conditionResults":[{"condition":"c","success":true,"details":[{"label":"l","value":"` + strings.Repeat("a", maximumDetailValueLength+1) + `"}]}]}`,
+			AuthorizationHeaderBearerToken: "Bearer token",
+			ExpectedCode:                   400,
+		},
+		{
+			Name:                           "too-many-condition-result-details",
+			Path:                           "/api/v1/endpoints/g_n/external?success=true",
+			Body:                           `{"conditionResults":[{"condition":"c","success":true,"details":[` + strings.Repeat(`{"label":"l","value":"v"},`, maximumNumberOfDetailsPerConditionResult) + `{"label":"l","value":"v"}]}]}`,
+			AuthorizationHeaderBearerToken: "Bearer token",
+			ExpectedCode:                   400,
+		},
+		{
 			Name:                           "hostname-too-long",
 			Path:                           "/api/v1/endpoints/g_n/external?success=true&hostname=" + strings.Repeat("a", maximumHostnameLengthPerPush+1),
 			AuthorizationHeaderBearerToken: "Bearer token",
@@ -349,6 +384,53 @@ func TestCreateExternalEndpointResultWithConditionResults(t *testing.T) {
 	}
 	if len(endpointStatus.Results[3].ConditionResults) != 0 {
 		t.Errorf("expected fourth result to have no condition results, because the body was null")
+	}
+}
+
+func TestCreateExternalEndpointResultWithConditionResultDetails(t *testing.T) {
+	defer store.Get().Clear()
+	defer cache.Clear()
+	cfg := &config.Config{
+		ExternalEndpoints: []*endpoint.ExternalEndpoint{
+			{
+				Name:  "n",
+				Group: "g",
+				Token: "token",
+			},
+		},
+		Maintenance: &maintenance.Config{},
+	}
+	api := New(cfg)
+	router := api.Router()
+	request := httptest.NewRequest("POST", "/api/v1/endpoints/g_n/external?success=false", strings.NewReader(`{"conditionResults":[{"condition":"stream: 0 of 12 valid","success":false,"details":[{"label":"Attempt","value":"WARP · HTTP 403"},{"label":"Attempt","value":"direct · HTTP 200"},{"label":"Reason","value":""}]},{"condition":"manifest: reachable","success":true}]}`))
+	request.Header.Set("Authorization", "Bearer token")
+	response, err := router.Test(request)
+	if err != nil {
+		t.Fatalf("failed to push result: %s", err.Error())
+	}
+	defer response.Body.Close()
+	if response.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", response.StatusCode)
+	}
+	endpointStatus, err := store.Get().GetEndpointStatusByKey("g_n", paging.NewEndpointStatusParams().WithResults(1, 10))
+	if err != nil {
+		t.Fatalf("failed to get endpoint status: %s", err.Error())
+	}
+	if len(endpointStatus.Results) != 1 || len(endpointStatus.Results[0].ConditionResults) != 2 {
+		t.Fatalf("expected 1 result with 2 condition results, got %+v", endpointStatus.Results)
+	}
+	details := endpointStatus.Results[0].ConditionResults[0].Details
+	expected := []endpoint.ConditionResultDetail{{Label: "Attempt", Value: "WARP · HTTP 403"}, {Label: "Attempt", Value: "direct · HTTP 200"}, {Label: "Reason", Value: ""}}
+	if len(details) != len(expected) {
+		t.Fatalf("expected %d details in pushed order, got %d", len(expected), len(details))
+	}
+	for i, detail := range details {
+		if *detail != expected[i] {
+			t.Errorf("expected detail %d to be %+v, got %+v", i, expected[i], *detail)
+		}
+	}
+	if endpointStatus.Results[0].ConditionResults[1].Details != nil {
+		t.Errorf("expected a condition result pushed without details to have none, got %+v", endpointStatus.Results[0].ConditionResults[1].Details)
 	}
 }
 
