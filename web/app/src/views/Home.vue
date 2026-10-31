@@ -232,10 +232,11 @@ const filteredEndpoints = computed(() => {
     const query = searchQuery.value.toLowerCase()
     filtered = filtered.filter(endpoint => 
       endpoint.name.toLowerCase().includes(query) ||
-      (endpoint.group && endpoint.group.toLowerCase().includes(query))
+      (endpoint.group && endpoint.group.toLowerCase().includes(query)) ||
+      (endpoint.results?.length > 0 && endpoint.results[endpoint.results.length - 1].hostname?.toLowerCase().includes(query))
     )
   }
-  
+
   if (showOnlyFailing.value) {
     filtered = filtered.filter(endpoint => {
       if (!endpoint.results || endpoint.results.length === 0) return false
