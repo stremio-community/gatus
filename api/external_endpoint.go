@@ -24,6 +24,9 @@ const (
 
 	// maximumConditionLengthPerPush is the maximum length of a single condition pushed alongside the result of an external endpoint
 	maximumConditionLengthPerPush = 1024
+
+	// maximumHostnameLengthPerPush is the maximum length of a DNS name
+	maximumHostnameLengthPerPush = 253
 )
 
 // externalEndpointResultRequestBody is the optional JSON body that may be sent when pushing the result of an
@@ -74,6 +77,12 @@ func CreateExternalEndpointResult(cfg *config.Config) fiber.Handler {
 				return c.Status(400).SendString("invalid duration: " + err.Error())
 			}
 			result.Duration = parsedDuration
+		}
+		if hostname := c.Query("hostname"); len(hostname) > 0 {
+			if len(hostname) > maximumHostnameLengthPerPush {
+				return c.Status(400).SendString(fmt.Sprintf("hostname must not exceed %d characters", maximumHostnameLengthPerPush))
+			}
+			result.Hostname = hostname
 		}
 		if errorFromQuery := c.Query("error"); !result.Success && len(errorFromQuery) > 0 {
 			result.AddError(errorFromQuery)
