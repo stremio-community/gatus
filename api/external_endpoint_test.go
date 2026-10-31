@@ -158,6 +158,12 @@ func TestCreateExternalEndpointResult(t *testing.T) {
 			AuthorizationHeaderBearerToken: "Bearer token",
 			ExpectedCode:                   400,
 		},
+		{
+			Name:                           "hostname-too-long",
+			Path:                           "/api/v1/endpoints/g_n/external?success=true&hostname=" + strings.Repeat("a", maximumHostnameLengthPerPush+1),
+			AuthorizationHeaderBearerToken: "Bearer token",
+			ExpectedCode:                   400,
+		},
 	}
 	for _, scenario := range scenarios {
 		t.Run(scenario.Name, func(t *testing.T) {
@@ -343,6 +349,51 @@ func TestCreateExternalEndpointResultWithConditionResults(t *testing.T) {
 	}
 	if len(endpointStatus.Results[3].ConditionResults) != 0 {
 		t.Errorf("expected fourth result to have no condition results, because the body was null")
+	}
+}
+
+func TestCreateExternalEndpointResultWithHostname(t *testing.T) {
+	defer store.Get().Clear()
+	defer cache.Clear()
+	cfg := &config.Config{
+		ExternalEndpoints: []*endpoint.ExternalEndpoint{
+			{
+				Name:  "n",
+				Group: "g",
+				Token: "token",
+			},
+		},
+		Maintenance: &maintenance.Config{},
+	}
+	api := New(cfg)
+	router := api.Router()
+	for _, path := range []string{
+		"/api/v1/endpoints/g_n/external?success=true&hostname=example.org",
+		"/api/v1/endpoints/g_n/external?success=true",
+	} {
+		request := httptest.NewRequest("POST", path, http.NoBody)
+		request.Header.Set("Authorization", "Bearer token")
+		response, err := router.Test(request)
+		if err != nil {
+			t.Fatalf("failed to push result: %s", err.Error())
+		}
+		response.Body.Close()
+		if response.StatusCode != 200 {
+			t.Fatalf("%s %s should have returned 200, but returned %d instead", request.Method, request.URL, response.StatusCode)
+		}
+	}
+	endpointStatus, err := store.Get().GetEndpointStatusByKey("g_n", paging.NewEndpointStatusParams().WithResults(1, 10))
+	if err != nil {
+		t.Fatalf("failed to get endpoint status: %s", err.Error())
+	}
+	if len(endpointStatus.Results) != 2 {
+		t.Fatalf("expected 2 results but got %d", len(endpointStatus.Results))
+	}
+	if endpointStatus.Results[0].Hostname != "example.org" {
+		t.Errorf("expected first result to have hostname example.org but got '%s'", endpointStatus.Results[0].Hostname)
+	}
+	if endpointStatus.Results[1].Hostname != "" {
+		t.Errorf("expected second result to have no hostname, because none was pushed, but got '%s'", endpointStatus.Results[1].Hostname)
 	}
 }
 
