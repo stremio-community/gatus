@@ -98,6 +98,7 @@
                     :endpoint="endpoint"
                     :maxResults="resultPageSize"
                     :showAverageResponseTime="showAverageResponseTime"
+                    :showGroup="false"
                     @showTooltip="showTooltip"
                   />
                 </div>
