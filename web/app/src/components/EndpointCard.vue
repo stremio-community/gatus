@@ -179,6 +179,10 @@ const handleMouseLeave = (result, event) => {
 }
 
 const handleClick = (result, event, index) => {
+  if (result.conditionResults?.length) {
+    emit('showTooltip', result, event, 'details')
+    return
+  }
   // Clear selections in other cards first
   window.dispatchEvent(new CustomEvent('clear-data-point-selection'))
   // Then toggle this card's selection

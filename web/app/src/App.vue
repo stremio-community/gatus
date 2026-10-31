@@ -149,7 +149,7 @@
     </div>
 
     <!-- Tooltip -->
-    <Tooltip :result="tooltip.result" :event="tooltip.event" :isPersistent="tooltipIsPersistent" @showDetails="showResultDetails" />
+    <Tooltip :result="tooltip.result" :event="tooltip.event" :isPersistent="tooltipIsPersistent" />
 
     <ResultDetailsModal v-if="detailsResult" :result="detailsResult" @close="detailsResult = null" />
   </div>
@@ -217,7 +217,9 @@ const fetchConfig = async () => {
 }
 
 const showTooltip = (result, event, action = 'hover') => {
-  if (action === 'click') {
+  if (action === 'details') {
+    showResultDetails(result)
+  } else if (action === 'click') {
     if (!result) {
       // Deselecting
       tooltip.value = {}
