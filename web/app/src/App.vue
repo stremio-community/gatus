@@ -16,7 +16,7 @@
               <component 
                 :is="link ? 'a' : 'div'" 
                 :href="link" 
-                target="_blank"
+                :target="linkTarget"
                 :class="['flex items-center gap-3', link && 'hover:opacity-80 transition-opacity']"
               >
                 <div class="w-12 h-12 flex items-center justify-center">
@@ -190,6 +190,11 @@ const header = computed(() => {
 
 const link = computed(() => {
   return window.config && window.config.link && window.config.link !== '{{ .UI.Link }}' ? window.config.link : null
+})
+
+const linkTarget = computed(() => {
+  if (!link.value) return undefined
+  return new URL(link.value, window.location.href).origin === window.location.origin ? undefined : '_blank'
 })
 
 const buttons = computed(() => {
