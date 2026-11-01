@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/TwiN/gatus/v5/alerting/alert"
 	"github.com/TwiN/gatus/v5/client"
@@ -23,6 +25,8 @@ type Config struct {
 	WebhookURL     string `yaml:"webhook-url"`
 	Title          string `yaml:"title,omitempty"`           // Title of the message that will be sent
 	MessageContent string `yaml:"message-content,omitempty"` // Message content for pinging users or groups (e.g. "<@123456789>" or "<@&987654321>")
+	ComponentsV2   bool   `yaml:"components-v2,omitempty"`   // Whether to send the alert as Components V2 instead of an embed
+	StatusPageURL  string `yaml:"status-page-url,omitempty"` // Base URL of the status page, used to link a Components V2 alert to its endpoint
 }
 
 func (cfg *Config) Validate() error {
@@ -42,6 +46,28 @@ func (cfg *Config) Merge(override *Config) {
 	if len(override.MessageContent) > 0 {
 		cfg.MessageContent = override.MessageContent
 	}
+	if override.ComponentsV2 {
+		cfg.ComponentsV2 = true
+	}
+	if len(override.StatusPageURL) > 0 {
+		cfg.StatusPageURL = override.StatusPageURL
+	}
+}
+
+// requestURL returns the webhook URL to post to.
+// Discord rejects components sent to a webhook that isn't owned by an application unless with_components is set.
+func (cfg *Config) requestURL() string {
+	if !cfg.ComponentsV2 {
+		return cfg.WebhookURL
+	}
+	webhookURL, err := url.Parse(cfg.WebhookURL)
+	if err != nil {
+		return cfg.WebhookURL
+	}
+	query := webhookURL.Query()
+	query.Set("with_components", "true")
+	webhookURL.RawQuery = query.Encode()
+	return webhookURL.String()
 }
 
 // AlertProvider is the configuration necessary for sending an alert using Discord
@@ -81,7 +107,7 @@ func (provider *AlertProvider) Send(ep *endpoint.Endpoint, alert *alert.Alert, r
 		return err
 	}
 	buffer := bytes.NewBuffer(provider.buildRequestBody(cfg, ep, alert, result, resolved))
-	request, err := http.NewRequest(http.MethodPost, cfg.WebhookURL, buffer)
+	request, err := http.NewRequest(http.MethodPost, cfg.requestURL(), buffer)
 	if err != nil {
 		return err
 	}
@@ -118,6 +144,9 @@ type Field struct {
 
 // buildRequestBody builds the request body for the provider
 func (provider *AlertProvider) buildRequestBody(cfg *Config, ep *endpoint.Endpoint, alert *alert.Alert, result *endpoint.Result, resolved bool) []byte {
+	if cfg.ComponentsV2 {
+		return buildComponentsV2RequestBody(cfg, ep, alert, result, resolved)
+	}
 	var message string
 	var colorCode int
 	if resolved {
@@ -164,6 +193,112 @@ func (provider *AlertProvider) buildRequestBody(cfg *Config, ep *endpoint.Endpoi
 	}
 	bodyAsJSON, _ := json.Marshal(body)
 	return bodyAsJSON
+}
+
+const (
+	componentTypeActionRow   = 1
+	componentTypeButton      = 2
+	componentTypeTextDisplay = 10
+	componentTypeContainer   = 17
+
+	buttonStyleLink = 5
+
+	messageFlagIsComponentsV2 = 1 << 15
+
+	colorTriggered = 15158332
+	colorResolved  = 3066993
+
+	// maximumFailedConditionLines keeps an alert well under Discord's 4000 character limit on a message's text, past which Discord rejects it.
+	maximumFailedConditionLines = 10
+)
+
+type ComponentsV2Body struct {
+	Flags      int         `json:"flags"`
+	Components []Component `json:"components"`
+}
+
+type Component struct {
+	Type        int         `json:"type"`
+	Content     string      `json:"content,omitempty"`
+	AccentColor int         `json:"accent_color,omitempty"`
+	Components  []Component `json:"components,omitempty"`
+	Style       int         `json:"style,omitempty"`
+	Label       string      `json:"label,omitempty"`
+	URL         string      `json:"url,omitempty"`
+}
+
+func buildComponentsV2RequestBody(cfg *Config, ep *endpoint.Endpoint, alert *alert.Alert, result *endpoint.Result, resolved bool) []byte {
+	color := colorTriggered
+	if resolved {
+		color = colorResolved
+	}
+	heading := fmt.Sprintf("**%s**", ep.Name)
+	if group := strings.TrimSpace(ep.Group); len(group) > 0 {
+		heading += " · " + group
+	}
+	container := Component{
+		Type:        componentTypeContainer,
+		AccentColor: color,
+		Components:  []Component{{Type: componentTypeTextDisplay, Content: heading}},
+	}
+	if subtext := buildSubtext(alert, result); len(subtext) > 0 {
+		container.Components = append(container.Components, Component{Type: componentTypeTextDisplay, Content: "-# " + subtext})
+	}
+	if !resolved {
+		if failedConditions := formatFailedConditions(result); len(failedConditions) > 0 {
+			container.Components = append(container.Components, Component{Type: componentTypeTextDisplay, Content: failedConditions})
+		}
+	}
+	if len(cfg.StatusPageURL) > 0 {
+		container.Components = append(container.Components, Component{
+			Type: componentTypeActionRow,
+			Components: []Component{{
+				Type:  componentTypeButton,
+				Style: buttonStyleLink,
+				Label: "View on status page",
+				URL:   strings.TrimSuffix(cfg.StatusPageURL, "/") + "/endpoints/" + url.PathEscape(ep.Key()),
+			}},
+		})
+	}
+	body := ComponentsV2Body{Flags: messageFlagIsComponentsV2}
+	if len(cfg.MessageContent) > 0 {
+		body.Components = append(body.Components, Component{Type: componentTypeTextDisplay, Content: cfg.MessageContent})
+	}
+	body.Components = append(body.Components, container)
+	bodyAsJSON, _ := json.Marshal(body)
+	return bodyAsJSON
+}
+
+func buildSubtext(alert *alert.Alert, result *endpoint.Result) string {
+	var parts []string
+	if description := alert.GetDescription(); len(description) > 0 {
+		parts = append(parts, description)
+	} else if len(result.Hostname) > 0 {
+		parts = append(parts, result.Hostname)
+	}
+	if !result.Timestamp.IsZero() {
+		parts = append(parts, fmt.Sprintf("<t:%d:R>", result.Timestamp.Unix()))
+	}
+	return strings.Join(parts, " · ")
+}
+
+func formatFailedConditions(result *endpoint.Result) string {
+	var lines []string
+	var omitted int
+	for _, conditionResult := range result.ConditionResults {
+		if conditionResult.Success {
+			continue
+		}
+		if len(lines) == maximumFailedConditionLines {
+			omitted++
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("❌ `%s`", conditionResult.Condition))
+	}
+	if omitted > 0 {
+		lines = append(lines, fmt.Sprintf("+%d more", omitted))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // GetDefaultAlert returns the provider's default alert configuration
