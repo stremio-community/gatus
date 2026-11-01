@@ -151,7 +151,7 @@
     <!-- Tooltip -->
     <Tooltip :result="tooltip.result" :event="tooltip.event" :isPersistent="tooltipIsPersistent" />
 
-    <ResultDetailsModal v-if="detailsResult" :result="detailsResult" @close="detailsResult = null" />
+    <ResultDetailsModal v-if="resultDetails" :result="resultDetails.result" :endpointKey="resultDetails.endpointKey" @close="resultDetails = null" />
   </div>
 </template>
 
@@ -176,7 +176,7 @@ const tooltip = ref({})
 const mobileMenuOpen = ref(false)
 const isOidcLoading = ref(false)
 const tooltipIsPersistent = ref(false)
-const detailsResult = ref(null)
+const resultDetails = ref(null)
 let configInterval = null
 
 // Computed properties
@@ -225,9 +225,9 @@ const fetchConfig = async () => {
   }
 }
 
-const showTooltip = (result, event, action = 'hover') => {
+const showTooltip = (result, event, action = 'hover', endpointKey) => {
   if (action === 'details') {
-    showResultDetails(result)
+    showResultDetails(result, endpointKey)
   } else if (action === 'click') {
     if (!result) {
       // Deselecting
@@ -246,8 +246,8 @@ const showTooltip = (result, event, action = 'hover') => {
   }
 }
 
-const showResultDetails = (result) => {
-  detailsResult.value = result
+const showResultDetails = (result, endpointKey) => {
+  resultDetails.value = { result, endpointKey }
   tooltip.value = {}
   tooltipIsPersistent.value = false
   window.dispatchEvent(new CustomEvent('clear-data-point-selection'))

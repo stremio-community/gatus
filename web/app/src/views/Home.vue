@@ -488,8 +488,8 @@ const toggleShowAverageResponseTime = () => {
   localStorage.setItem('gatus:show-average-response-time', showAverageResponseTime.value ? 'true' : 'false')
 }
 
-const showTooltip = (result, event, action = 'hover') => {
-  emit('showTooltip', result, event, action)
+const showTooltip = (result, event, action = 'hover', endpointKey) => {
+  emit('showTooltip', result, event, action, endpointKey)
 }
 
 const calculateUnhealthyCount = (endpoints) => {

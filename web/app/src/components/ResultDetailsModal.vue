@@ -24,6 +24,10 @@
 
       <!-- Content -->
       <div class="p-4 space-y-2 overflow-y-auto max-h-[60vh]">
+        <p v-if="detailsState !== 'ready'" class="flex items-center gap-2 text-sm text-muted-foreground">
+          <Loader2 v-if="detailsState === 'loading'" class="w-4 h-4 animate-spin" />
+          {{ detailsStateMessages[detailsState] }}
+        </p>
         <div
           v-for="entry in sortedConditionResults"
           :key="entry.index"
@@ -68,31 +72,71 @@
 
 <script setup>
 import { computed, ref, onMounted, onUnmounted } from 'vue'
-import { X, CheckCircle, XCircle, ChevronDown } from 'lucide-vue-next'
+import { X, CheckCircle, XCircle, ChevronDown, Loader2 } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { formatDuration } from '@/utils/format'
 import { prettifyTimestamp } from '@/utils/time'
 
 const props = defineProps({
-  result: { type: Object, required: true }
+  result: { type: Object, required: true },
+  // Lets the dialog fetch details the result was loaded without, as the dashboard's results are.
+  endpointKey: { type: String, default: null }
 })
 
 const emit = defineEmits(['close'])
 
+// Matches the endpoint page's page size, so both requests share one cached status in Gatus.
+const DETAILS_PAGE_SIZE = 50
+
+const detailsStateMessages = {
+  loading: 'Loading details…',
+  missing: 'Details for this check are no longer available.',
+  failed: 'Could not load details for this check.'
+}
+
 const hasDetails = (conditionResult) => conditionResult.details?.length > 0
+
+const loadedResult = ref(null)
+const detailsState = ref('ready')
+const displayedResult = computed(() => loadedResult.value || props.result)
 
 // Failed conditions are what the reader came for, so they come first; the sort is stable, so pushed order is kept otherwise.
 const sortedConditionResults = computed(() => {
-  return (props.result.conditionResults || [])
+  return (displayedResult.value.conditionResults || [])
     .map((conditionResult, index) => ({ conditionResult, index }))
     .sort((a, b) => Number(a.conditionResult.success) - Number(b.conditionResult.success))
 })
 
-const expanded = ref(new Set(
+const failedWithDetails = () => new Set(
   sortedConditionResults.value
     .filter(entry => !entry.conditionResult.success && hasDetails(entry.conditionResult))
     .map(entry => entry.index)
-))
+)
+
+const expanded = ref(failedWithDetails())
+
+const loadDetails = async () => {
+  if (!props.endpointKey || props.result.conditionResults?.some(hasDetails)) return
+  detailsState.value = 'loading'
+  try {
+    const response = await fetch(`/api/v1/endpoints/${encodeURIComponent(props.endpointKey)}/statuses?page=1&pageSize=${DETAILS_PAGE_SIZE}`, {
+      credentials: 'include'
+    })
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    const endpointStatus = await response.json()
+    const result = endpointStatus.results?.find(candidate => candidate.timestamp === props.result.timestamp)
+    if (!result) {
+      detailsState.value = 'missing'
+      return
+    }
+    loadedResult.value = result
+    expanded.value = failedWithDetails()
+    detailsState.value = 'ready'
+  } catch (error) {
+    console.error('Failed to load result details:', error)
+    detailsState.value = 'failed'
+  }
+}
 
 const toggle = (index) => {
   const next = new Set(expanded.value)
@@ -108,6 +152,9 @@ const handleKeydown = (event) => {
   if (event.key === 'Escape') emit('close')
 }
 
-onMounted(() => window.addEventListener('keydown', handleKeydown))
+onMounted(() => {
+  window.addEventListener('keydown', handleKeydown)
+  loadDetails()
+})
 onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
 </script>
