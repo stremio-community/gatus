@@ -360,7 +360,7 @@ gatus-cli external-endpoint push --url https://status.example.org --key "core_ex
 
 or send an HTTP request:
 ```
-POST /api/v1/endpoints/{key}/external?success={success}&error={error}&duration={duration}&hostname={hostname}
+POST /api/v1/endpoints/{key}/external?success={success}&error={error}&duration={duration}&hostname={hostname}&logo={logo}
 ```
 Where:
 - `{key}` has the pattern `<GROUP_NAME>_<ENDPOINT_NAME>` in which both variables have ` `, `/`, `_`, `,`, `.`, `#`, `+` and `&` replaced by `-`.
@@ -369,6 +369,7 @@ Where:
 - `{error}` (optional): a string describing the reason for a failed health check. If {success} is false, this should contain the error message; if the check is successful, this will be ignored.
 - `{duration}` (optional): the time that the request took as a duration string (e.g. 10s).
 - `{hostname}` (optional): the hostname of whatever was checked, displayed next to the group on the dashboard (at most 253 characters).
+- `{logo}` (optional): an absolute `http` or `https` URL of an image representing whatever was checked (at most 2048 characters). It is not stored; Discord alerts sent with `components-v2` show it as a thumbnail, and drop it if Discord rejects it.
 
 You must also pass the token as a `Bearer` token in the `Authorization` header.
 

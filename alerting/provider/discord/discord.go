@@ -106,22 +106,32 @@ func (provider *AlertProvider) Send(ep *endpoint.Endpoint, alert *alert.Alert, r
 	if err != nil {
 		return err
 	}
-	buffer := bytes.NewBuffer(provider.buildRequestBody(cfg, ep, alert, result, resolved))
-	request, err := http.NewRequest(http.MethodPost, cfg.requestURL(), buffer)
+	statusCode, err := post(cfg, provider.buildRequestBody(cfg, ep, alert, result, resolved))
+	if statusCode == http.StatusBadRequest && cfg.ComponentsV2 && len(result.Logo) > 0 {
+		// Discord validates the thumbnail URL, which comes from a third party, so drop it rather than the alert.
+		withoutLogo := *result
+		withoutLogo.Logo = ""
+		_, err = post(cfg, provider.buildRequestBody(cfg, ep, alert, &withoutLogo, resolved))
+	}
+	return err
+}
+
+func post(cfg *Config, body []byte) (int, error) {
+	request, err := http.NewRequest(http.MethodPost, cfg.requestURL(), bytes.NewBuffer(body))
 	if err != nil {
-		return err
+		return 0, err
 	}
 	request.Header.Set("Content-Type", "application/json")
 	response, err := client.GetHTTPClient(nil).Do(request)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode > 399 {
-		body, _ := io.ReadAll(response.Body)
-		return fmt.Errorf("call to provider alert returned status code %d: %s", response.StatusCode, string(body))
+		responseBody, _ := io.ReadAll(response.Body)
+		return response.StatusCode, fmt.Errorf("call to provider alert returned status code %d: %s", response.StatusCode, string(responseBody))
 	}
-	return err
+	return response.StatusCode, nil
 }
 
 type Body struct {
@@ -198,7 +208,9 @@ func (provider *AlertProvider) buildRequestBody(cfg *Config, ep *endpoint.Endpoi
 const (
 	componentTypeActionRow   = 1
 	componentTypeButton      = 2
+	componentTypeSection     = 9
 	componentTypeTextDisplay = 10
+	componentTypeThumbnail   = 11
 	componentTypeContainer   = 17
 
 	buttonStyleLink = 5
@@ -225,6 +237,12 @@ type Component struct {
 	Style       int         `json:"style,omitempty"`
 	Label       string      `json:"label,omitempty"`
 	URL         string      `json:"url,omitempty"`
+	Accessory   *Component  `json:"accessory,omitempty"`
+	Media       *Media      `json:"media,omitempty"`
+}
+
+type Media struct {
+	URL string `json:"url"`
 }
 
 func buildComponentsV2RequestBody(cfg *Config, ep *endpoint.Endpoint, alert *alert.Alert, result *endpoint.Result, resolved bool) []byte {
@@ -236,13 +254,21 @@ func buildComponentsV2RequestBody(cfg *Config, ep *endpoint.Endpoint, alert *ale
 	if group := strings.TrimSpace(ep.Group); len(group) > 0 {
 		heading += " · " + group
 	}
+	header := []Component{{Type: componentTypeTextDisplay, Content: heading}}
+	if subtext := buildSubtext(alert, result); len(subtext) > 0 {
+		header = append(header, Component{Type: componentTypeTextDisplay, Content: "-# " + subtext})
+	}
+	if len(result.Logo) > 0 {
+		header = []Component{{
+			Type:       componentTypeSection,
+			Components: header,
+			Accessory:  &Component{Type: componentTypeThumbnail, Media: &Media{URL: result.Logo}},
+		}}
+	}
 	container := Component{
 		Type:        componentTypeContainer,
 		AccentColor: color,
-		Components:  []Component{{Type: componentTypeTextDisplay, Content: heading}},
-	}
-	if subtext := buildSubtext(alert, result); len(subtext) > 0 {
-		container.Components = append(container.Components, Component{Type: componentTypeTextDisplay, Content: "-# " + subtext})
+		Components:  header,
 	}
 	if !resolved {
 		if failedConditions := formatFailedConditions(result); len(failedConditions) > 0 {

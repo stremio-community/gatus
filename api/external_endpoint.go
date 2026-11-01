@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -27,6 +28,9 @@ const (
 
 	// maximumHostnameLengthPerPush is the maximum length of a DNS name
 	maximumHostnameLengthPerPush = 253
+
+	// maximumLogoLengthPerPush is the maximum length of a logo URL
+	maximumLogoLengthPerPush = 2048
 
 	// maximumNumberOfDetailsPerConditionResult is the maximum number of details that may be pushed alongside a single condition result
 	maximumNumberOfDetailsPerConditionResult = 20
@@ -93,6 +97,12 @@ func CreateExternalEndpointResult(cfg *config.Config) fiber.Handler {
 			}
 			result.Hostname = hostname
 		}
+		if logo := c.Query("logo"); len(logo) > 0 {
+			if err := validateLogo(logo); err != nil {
+				return c.Status(400).SendString(err.Error())
+			}
+			result.Logo = logo
+		}
 		if errorFromQuery := c.Query("error"); !result.Success && len(errorFromQuery) > 0 {
 			result.AddError(errorFromQuery)
 		}
@@ -153,6 +163,17 @@ func CreateExternalEndpointResult(cfg *config.Config) fiber.Handler {
 		// Return the result
 		return c.Status(200).SendString("")
 	}
+}
+
+func validateLogo(logo string) error {
+	if len(logo) > maximumLogoLengthPerPush {
+		return fmt.Errorf("logo must not exceed %d characters", maximumLogoLengthPerPush)
+	}
+	logoURL, err := url.Parse(logo)
+	if err != nil || (logoURL.Scheme != "http" && logoURL.Scheme != "https") || len(logoURL.Host) == 0 {
+		return errors.New("logo must be an absolute http or https URL")
+	}
+	return nil
 }
 
 func validateConditionResultDetails(details []*endpoint.ConditionResultDetail) error {

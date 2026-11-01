@@ -51,6 +51,12 @@ type Result struct {
 	// It is used for health evaluation as well as debugging purposes.
 	Body []byte `json:"-"`
 
+	// Logo is the URL of an image representing whatever was checked, pushed by an external endpoint
+	//
+	// Note that this field is not persisted in the storage.
+	// It only lives as long as the push that carried it, which is when alerts are sent.
+	Logo string `json:"-"`
+
 	///////////////////////////////////////////////////////////////////////
 	// Below is used only for the UI and is not persisted in the storage //
 	///////////////////////////////////////////////////////////////////////
