@@ -555,6 +555,31 @@ endpoints:
 	}
 }
 
+func TestParseAndValidateConfigBytesWithAlignToInterval(t *testing.T) {
+	config, err := parseAndValidateConfigBytes([]byte(`
+endpoints:
+  - name: aligned
+    url: https://twin.sh/health
+    interval: 5m
+    align-to-interval: true
+    conditions:
+      - "[STATUS] == 200"
+  - name: unaligned
+    url: https://twin.sh/health
+    conditions:
+      - "[STATUS] == 200"
+`))
+	if err != nil {
+		t.Fatal("expected no error, got", err.Error())
+	}
+	if !config.Endpoints[0].AlignToInterval {
+		t.Error("AlignToInterval should have been true")
+	}
+	if config.Endpoints[1].AlignToInterval {
+		t.Error("AlignToInterval should have been false by default")
+	}
+}
+
 func TestParseAndValidateConfigBytesWithAddress(t *testing.T) {
 	config, err := parseAndValidateConfigBytes([]byte(`
 web:

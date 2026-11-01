@@ -12,6 +12,10 @@ const (
 	// UnlimitedConcurrencyWeight is the semaphore weight used when concurrency is set to 0 (unlimited).
 	// This provides a practical upper limit while allowing very high concurrency for large deployments.
 	UnlimitedConcurrencyWeight = 10000
+
+	// staggerDelay is waited between starting the monitoring of each endpoint or suite to prevent multiple requests
+	// from running at the same time.
+	staggerDelay = 222 * time.Millisecond
 )
 
 var (
@@ -35,11 +39,12 @@ func Monitor(cfg *config.Config) {
 		monitoringSemaphore = semaphore.NewWeighted(int64(cfg.Concurrency))
 	}
 	extraLabels := cfg.GetUniqueExtraMetricLabels()
+	var stagger time.Duration
 	for _, endpoint := range cfg.Endpoints {
 		if endpoint.IsEnabled() {
-			// To prevent multiple requests from running at the same time, we'll wait for a little before each iteration
-			time.Sleep(222 * time.Millisecond)
-			go monitorEndpoint(endpoint, cfg, extraLabels, ctx)
+			time.Sleep(staggerDelay)
+			stagger += staggerDelay
+			go monitorEndpoint(endpoint, cfg, extraLabels, ctx, stagger)
 		}
 	}
 	for _, externalEndpoint := range cfg.ExternalEndpoints {
@@ -52,7 +57,7 @@ func Monitor(cfg *config.Config) {
 	}
 	for _, suite := range cfg.Suites {
 		if suite.IsEnabled() {
-			time.Sleep(222 * time.Millisecond)
+			time.Sleep(staggerDelay)
 			go monitorSuite(suite, cfg, extraLabels, ctx)
 		}
 	}
