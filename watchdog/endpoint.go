@@ -12,7 +12,11 @@ import (
 )
 
 // monitorEndpoint a single endpoint in a loop
-func monitorEndpoint(ep *endpoint.Endpoint, cfg *config.Config, extraLabels []string, ctx context.Context) {
+func monitorEndpoint(ep *endpoint.Endpoint, cfg *config.Config, extraLabels []string, ctx context.Context, stagger time.Duration) {
+	if ep.AlignToInterval {
+		monitorEndpointAligned(ep, cfg, extraLabels, ctx, stagger)
+		return
+	}
 	// Run it immediately on start
 	executeEndpoint(ep, cfg, extraLabels)
 	// Loop for the next executions
@@ -30,6 +34,38 @@ func monitorEndpoint(ep *endpoint.Endpoint, cfg *config.Config, extraLabels []st
 	// Just in case somebody wandered all the way to here and wonders, "what about ExternalEndpoints?"
 	// Alerting is checked every time an external endpoint is pushed to Gatus, so they're not monitored
 	// periodically like they are for normal endpoints.
+}
+
+// monitorEndpointAligned monitors an endpoint on whole multiples of its interval, each offset by its stagger.
+func monitorEndpointAligned(ep *endpoint.Endpoint, cfg *config.Config, extraLabels []string, ctx context.Context, stagger time.Duration) {
+	next := nextAlignedRun(time.Now(), ep.Interval, stagger)
+	timer := time.NewTimer(time.Until(next))
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			logr.Warnf("[watchdog.monitorEndpointAligned] Canceling current execution of group=%s; endpoint=%s; key=%s", ep.Group, ep.Name, ep.Key())
+			return
+		case <-timer.C:
+			executeEndpoint(ep, cfg, extraLabels)
+			// From the scheduled run rather than the clock alone, so that a timer firing early can't run the same slot twice.
+			// An execution that overran skips the runs it missed, like a ticker would.
+			now := time.Now()
+			if now.Before(next) {
+				now = next
+			}
+			next = nextAlignedRun(now, ep.Interval, stagger)
+			timer.Reset(time.Until(next))
+		}
+	}
+}
+
+// nextAlignedRun returns the first time strictly after t that lies offset past a whole multiple of interval since the
+// Unix epoch.
+func nextAlignedRun(t time.Time, interval, offset time.Duration) time.Time {
+	sinceAnchor := t.UnixNano() - int64(offset)
+	slot := (sinceAnchor/int64(interval) + 1) * int64(interval)
+	return time.Unix(0, slot+int64(offset))
 }
 
 func executeEndpoint(ep *endpoint.Endpoint, cfg *config.Config, extraLabels []string) {

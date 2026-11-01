@@ -109,6 +109,10 @@ type Endpoint struct {
 	// Interval is the duration to wait between every status check
 	Interval time.Duration `yaml:"interval,omitempty"`
 
+	// AlignToInterval runs the endpoint on whole multiples of Interval since the Unix epoch (e.g. :00, :05, :10 for 5m),
+	// instead of immediately on start and then every Interval, so that its schedule survives restarts and config reloads.
+	AlignToInterval bool `yaml:"align-to-interval,omitempty"`
+
 	// Conditions used to determine the health of the endpoint
 	Conditions []Condition `yaml:"conditions"`
 
