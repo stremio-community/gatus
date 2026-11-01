@@ -321,7 +321,7 @@ func TestAlertProvider_buildRequestBodyWithComponentsV2(t *testing.T) {
 			Hostname:         "example.org",
 			Logo:             "https://example.org/logo.png",
 			Timestamp:        timestamp,
-			ExpectedBody:     `{"flags":32768,"components":[{"type":17,"accent_color":15158332,"components":[{"type":9,"components":[{"type":10,"content":"**endpoint-name**"},{"type":10,"content":"-# example.org · \u003ct:1700000000:R\u003e"}],"accessory":{"type":11,"media":{"url":"https://example.org/logo.png"}}},{"type":10,"content":"❌ ` + "`[STATUS] == 200`" + `"}]}]}`,
+			ExpectedBody:     `{"flags":32768,"components":[{"type":17,"accent_color":15158332,"components":[{"type":9,"components":[{"type":10,"content":"**endpoint-name**"},{"type":10,"content":"-# example.org · \u003ct:1700000000:R\u003e"},{"type":10,"content":"` + thumbnailAlignmentPadding + `"}],"accessory":{"type":11,"media":{"url":"https://example.org/logo.png"}}},{"type":10,"content":"❌ ` + "`[STATUS] == 200`" + `"}]}]}`,
 		},
 		{
 			Name:         "triggered-with-message-content-and-status-page-url",

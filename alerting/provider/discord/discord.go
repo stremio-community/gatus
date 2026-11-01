@@ -224,6 +224,11 @@ const (
 	maximumFailedConditionLines = 10
 )
 
+// thumbnailAlignmentPadding is a line of blanks, wider than most headings, under a heading that has a thumbnail.
+// Discord sizes a container to its widest line and pins the thumbnail to its right edge, so without it the thumbnail shifts with the text.
+// It uses U+2800, which renders blank but isn't whitespace Discord could trim.
+var thumbnailAlignmentPadding = "-# " + strings.Repeat("\u2800", 90)
+
 type ComponentsV2Body struct {
 	Flags      int         `json:"flags"`
 	Components []Component `json:"components"`
@@ -261,7 +266,7 @@ func buildComponentsV2RequestBody(cfg *Config, ep *endpoint.Endpoint, alert *ale
 	if len(result.Logo) > 0 {
 		header = []Component{{
 			Type:       componentTypeSection,
-			Components: header,
+			Components: append(header, Component{Type: componentTypeTextDisplay, Content: thumbnailAlignmentPadding}),
 			Accessory:  &Component{Type: componentTypeThumbnail, Media: &Media{URL: result.Logo}},
 		}}
 	}
