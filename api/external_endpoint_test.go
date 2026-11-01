@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -11,11 +12,13 @@ import (
 	"github.com/TwiN/gatus/v5/alerting"
 	"github.com/TwiN/gatus/v5/alerting/alert"
 	"github.com/TwiN/gatus/v5/alerting/provider/discord"
+	"github.com/TwiN/gatus/v5/client"
 	"github.com/TwiN/gatus/v5/config"
 	"github.com/TwiN/gatus/v5/config/endpoint"
 	"github.com/TwiN/gatus/v5/config/maintenance"
 	"github.com/TwiN/gatus/v5/storage/store"
 	"github.com/TwiN/gatus/v5/storage/store/common/paging"
+	"github.com/TwiN/gatus/v5/test"
 )
 
 func TestCreateExternalEndpointResult(t *testing.T) {
@@ -196,6 +199,24 @@ func TestCreateExternalEndpointResult(t *testing.T) {
 		{
 			Name:                           "hostname-too-long",
 			Path:                           "/api/v1/endpoints/g_n/external?success=true&hostname=" + strings.Repeat("a", maximumHostnameLengthPerPush+1),
+			AuthorizationHeaderBearerToken: "Bearer token",
+			ExpectedCode:                   400,
+		},
+		{
+			Name:                           "logo-too-long",
+			Path:                           "/api/v1/endpoints/g_n/external?success=true&logo=https://example.org/" + strings.Repeat("a", maximumLogoLengthPerPush),
+			AuthorizationHeaderBearerToken: "Bearer token",
+			ExpectedCode:                   400,
+		},
+		{
+			Name:                           "logo-not-http",
+			Path:                           "/api/v1/endpoints/g_n/external?success=true&logo=" + url.QueryEscape("data:image/png;base64,AAAA"),
+			AuthorizationHeaderBearerToken: "Bearer token",
+			ExpectedCode:                   400,
+		},
+		{
+			Name:                           "logo-relative",
+			Path:                           "/api/v1/endpoints/g_n/external?success=true&logo=/logo.png",
 			AuthorizationHeaderBearerToken: "Bearer token",
 			ExpectedCode:                   400,
 		},
@@ -476,6 +497,47 @@ func TestCreateExternalEndpointResultWithHostname(t *testing.T) {
 	}
 	if endpointStatus.Results[1].Hostname != "" {
 		t.Errorf("expected second result to have no hostname, because none was pushed, but got '%s'", endpointStatus.Results[1].Hostname)
+	}
+}
+
+func TestCreateExternalEndpointResultWithLogo(t *testing.T) {
+	defer store.Get().Clear()
+	defer cache.Clear()
+	defer client.InjectHTTPClient(nil)
+	var alertBody string
+	client.InjectHTTPClient(&http.Client{Transport: test.MockRoundTripper(func(r *http.Request) *http.Response {
+		body, _ := io.ReadAll(r.Body)
+		alertBody = string(body)
+		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}
+	})})
+	cfg := &config.Config{
+		Alerting: &alerting.Config{
+			Discord: &discord.AlertProvider{DefaultConfig: discord.Config{WebhookURL: "https://discord.example.org", ComponentsV2: true}},
+		},
+		ExternalEndpoints: []*endpoint.ExternalEndpoint{
+			{
+				Name:   "n",
+				Group:  "g",
+				Token:  "token",
+				Alerts: []*alert.Alert{{Type: alert.TypeDiscord, FailureThreshold: 1, SuccessThreshold: 1}},
+			},
+		},
+		Maintenance: &maintenance.Config{},
+	}
+	api := New(cfg)
+	router := api.Router()
+	request := httptest.NewRequest("POST", "/api/v1/endpoints/g_n/external?success=false&logo="+url.QueryEscape("https://example.org/logo.png"), http.NoBody)
+	request.Header.Set("Authorization", "Bearer token")
+	response, err := router.Test(request)
+	if err != nil {
+		t.Fatalf("failed to push result: %s", err.Error())
+	}
+	response.Body.Close()
+	if response.StatusCode != 200 {
+		t.Fatalf("%s %s should have returned 200, but returned %d instead", request.Method, request.URL, response.StatusCode)
+	}
+	if !strings.Contains(alertBody, `"media":{"url":"https://example.org/logo.png"}`) {
+		t.Errorf("expected the alert to carry the pushed logo as a thumbnail, got body: %s", alertBody)
 	}
 }
 

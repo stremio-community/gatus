@@ -3,6 +3,7 @@ package discord
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -280,6 +281,7 @@ func TestAlertProvider_buildRequestBodyWithComponentsV2(t *testing.T) {
 		Alert            alert.Alert
 		ConditionResults []*endpoint.ConditionResult
 		Hostname         string
+		Logo             string
 		Timestamp        time.Time
 		Resolved         bool
 		ExpectedBody     string
@@ -312,6 +314,16 @@ func TestAlertProvider_buildRequestBodyWithComponentsV2(t *testing.T) {
 			ExpectedBody:     `{"flags":32768,"components":[{"type":17,"accent_color":15158332,"components":[{"type":10,"content":"**endpoint-name**"},{"type":10,"content":"❌ ` + "`[STATUS] == 200`" + `"}]}]}`,
 		},
 		{
+			Name:             "triggered-with-logo",
+			Config:           Config{ComponentsV2: true},
+			Endpoint:         endpoint.Endpoint{Name: "endpoint-name"},
+			ConditionResults: []*endpoint.ConditionResult{{Condition: "[STATUS] == 200", Success: false}},
+			Hostname:         "example.org",
+			Logo:             "https://example.org/logo.png",
+			Timestamp:        timestamp,
+			ExpectedBody:     `{"flags":32768,"components":[{"type":17,"accent_color":15158332,"components":[{"type":9,"components":[{"type":10,"content":"**endpoint-name**"},{"type":10,"content":"-# example.org · \u003ct:1700000000:R\u003e"}],"accessory":{"type":11,"media":{"url":"https://example.org/logo.png"}}},{"type":10,"content":"❌ ` + "`[STATUS] == 200`" + `"}]}]}`,
+		},
+		{
 			Name:         "triggered-with-message-content-and-status-page-url",
 			Config:       Config{ComponentsV2: true, MessageContent: "<@123456789>", StatusPageURL: "https://status.example.org/"},
 			Endpoint:     endpoint.Endpoint{Name: "endpoint-name", Group: "group"},
@@ -324,7 +336,7 @@ func TestAlertProvider_buildRequestBodyWithComponentsV2(t *testing.T) {
 				&scenario.Config,
 				&scenario.Endpoint,
 				&scenario.Alert,
-				&endpoint.Result{ConditionResults: scenario.ConditionResults, Hostname: scenario.Hostname, Timestamp: scenario.Timestamp},
+				&endpoint.Result{ConditionResults: scenario.ConditionResults, Hostname: scenario.Hostname, Logo: scenario.Logo, Timestamp: scenario.Timestamp},
 				scenario.Resolved,
 			)
 			if string(body) != scenario.ExpectedBody {
@@ -350,6 +362,27 @@ func TestAlertProvider_buildRequestBodyWithComponentsV2CapsFailedConditions(t *t
 	}
 	if last := lines[len(lines)-1]; last != "+3 more" {
 		t.Errorf("expected last line to be %q, got %q", "+3 more", last)
+	}
+}
+
+func TestAlertProvider_SendWithRejectedLogo(t *testing.T) {
+	defer client.InjectHTTPClient(nil)
+	var bodies []string
+	client.InjectHTTPClient(&http.Client{Transport: test.MockRoundTripper(func(r *http.Request) *http.Response {
+		body, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(body))
+		if strings.Contains(string(body), `"accessory"`) {
+			return &http.Response{StatusCode: http.StatusBadRequest, Body: http.NoBody}
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}
+	})})
+	provider := AlertProvider{DefaultConfig: Config{WebhookURL: "http://example.com", ComponentsV2: true}}
+	err := provider.Send(&endpoint.Endpoint{Name: "endpoint-name"}, &alert.Alert{}, &endpoint.Result{Logo: "https://example.org/logo.png"}, false)
+	if err != nil {
+		t.Fatal("expected the alert to be sent without its logo, got error:", err.Error())
+	}
+	if len(bodies) != 2 || strings.Contains(bodies[1], `"accessory"`) {
+		t.Errorf("expected a retry without the thumbnail, got bodies: %v", bodies)
 	}
 }
 
