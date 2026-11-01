@@ -25,7 +25,7 @@ func EndpointStatuses(cfg *config.Config) fiber.Handler {
 		value, exists := cache.Get(fmt.Sprintf("endpoint-status-%d-%d", page, pageSize))
 		var data []byte
 		if !exists {
-			endpointStatuses, err := store.Get().GetAllEndpointStatuses(paging.NewEndpointStatusParams().WithResults(page, pageSize))
+			endpointStatuses, err := store.Get().GetAllEndpointStatuses(paging.NewEndpointStatusParams().WithResults(page, pageSize).WithoutConditionDetails())
 			if err != nil {
 				logr.Errorf("[api.EndpointStatuses] Failed to retrieve endpoint statuses: %s", err.Error())
 				return c.Status(500).SendString(err.Error())

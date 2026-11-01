@@ -34,7 +34,26 @@ func ShallowCopyEndpointStatus(ss *endpoint.Status, params *paging.EndpointStatu
 			shallowCopy.Events = ss.Events[eventsStart:eventsEnd]
 		}
 	}
+	if params != nil && params.ExcludeConditionDetails {
+		shallowCopy.Results = withoutConditionDetails(shallowCopy.Results)
+	}
 	return shallowCopy
+}
+
+// withoutConditionDetails copies the results it strips because the stored results are shared with every other reader.
+func withoutConditionDetails(results []*endpoint.Result) []*endpoint.Result {
+	stripped := make([]*endpoint.Result, len(results))
+	for i, result := range results {
+		resultCopy := *result
+		resultCopy.ConditionResults = make([]*endpoint.ConditionResult, len(result.ConditionResults))
+		for j, conditionResult := range result.ConditionResults {
+			conditionResultCopy := *conditionResult
+			conditionResultCopy.Details = nil
+			resultCopy.ConditionResults[j] = &conditionResultCopy
+		}
+		stripped[i] = &resultCopy
+	}
+	return stripped
 }
 
 // ShallowCopySuiteStatus returns a shallow copy of a suite Status with only the results

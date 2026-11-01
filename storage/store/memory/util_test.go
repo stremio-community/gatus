@@ -169,3 +169,24 @@ func TestShallowCopySuiteStatus(t *testing.T) {
 		}
 	})
 }
+
+func TestShallowCopyEndpointStatusWithoutConditionDetails(t *testing.T) {
+	endpointStatus := endpoint.NewStatus("group", "name")
+	AddResult(endpointStatus, &endpoint.Result{
+		Timestamp: time.Now(),
+		ConditionResults: []*endpoint.ConditionResult{
+			{Condition: "stream: 0 of 12 valid", Details: []*endpoint.ConditionResultDetail{{Label: "Reason", Value: "socket hang up"}}},
+		},
+	}, storage.DefaultMaximumNumberOfResults, storage.DefaultMaximumNumberOfEvents)
+	stripped := ShallowCopyEndpointStatus(endpointStatus, paging.NewEndpointStatusParams().WithResults(1, 10).WithoutConditionDetails())
+	if len(stripped.Results) != 1 || len(stripped.Results[0].ConditionResults) != 1 {
+		t.Fatalf("expected 1 result with 1 condition result, got %+v", stripped.Results)
+	}
+	if stripped.Results[0].ConditionResults[0].Condition != "stream: 0 of 12 valid" || stripped.Results[0].ConditionResults[0].Details != nil {
+		t.Errorf("expected the condition without its details, got %+v", stripped.Results[0].ConditionResults[0])
+	}
+	withDetails := ShallowCopyEndpointStatus(endpointStatus, paging.NewEndpointStatusParams().WithResults(1, 10))
+	if len(withDetails.Results[0].ConditionResults[0].Details) != 1 {
+		t.Error("expected stripping a copy to leave the stored details intact")
+	}
+}

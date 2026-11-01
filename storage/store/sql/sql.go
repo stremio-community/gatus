@@ -757,7 +757,7 @@ func (s *Store) getEndpointStatusByKey(tx *sql.Tx, key string, parameters *pagin
 		}
 	}
 	if parameters.ResultsPageSize > 0 {
-		if endpointStatus.Results, err = s.getEndpointResultsByEndpointID(tx, endpointID, parameters.ResultsPage, parameters.ResultsPageSize); err != nil {
+		if endpointStatus.Results, err = s.getEndpointResultsByEndpointID(tx, endpointID, parameters.ResultsPage, parameters.ResultsPageSize, !parameters.ExcludeConditionDetails); err != nil {
 			logr.Errorf("[sql.getEndpointStatusByKey] Failed to retrieve results for key=%s: %s", key, err.Error())
 		}
 	}
@@ -816,7 +816,7 @@ func (s *Store) getEndpointEventsByEndpointID(tx *sql.Tx, endpointID int64, page
 	return
 }
 
-func (s *Store) getEndpointResultsByEndpointID(tx *sql.Tx, endpointID int64, page, pageSize int) (results []*endpoint.Result, err error) {
+func (s *Store) getEndpointResultsByEndpointID(tx *sql.Tx, endpointID int64, page, pageSize int, withConditionDetails bool) (results []*endpoint.Result, err error) {
 	rows, err := tx.Query(
 		`
 			SELECT endpoint_result_id, success, errors, connected, status, dns_rcode, certificate_expiration, domain_expiration, hostname, ip, duration, timestamp
@@ -855,7 +855,11 @@ func (s *Store) getEndpointResultsByEndpointID(tx *sql.Tx, endpointID int64, pag
 	}
 	// Get condition results
 	args := make([]interface{}, 0, len(idResultMap))
-	query := `SELECT endpoint_result_id, condition, success, details
+	detailsColumn := "NULL"
+	if withConditionDetails {
+		detailsColumn = "details"
+	}
+	query := `SELECT endpoint_result_id, condition, success, ` + detailsColumn + `
 				FROM endpoint_result_conditions
 				WHERE endpoint_result_id IN (`
 	index := 1
@@ -1166,29 +1170,32 @@ func (s *Store) mergeHourlyUptimeEntriesOlderThanMergeThresholdIntoDailyUptimeEn
 }
 
 func generateCacheKey(endpointKey string, p *paging.EndpointStatusParams) string {
-	return fmt.Sprintf("%s-%d-%d-%d-%d", endpointKey, p.EventsPage, p.EventsPageSize, p.ResultsPage, p.ResultsPageSize)
+	return fmt.Sprintf("%s-%d-%d-%d-%d-%t", endpointKey, p.EventsPage, p.EventsPageSize, p.ResultsPage, p.ResultsPageSize, p.ExcludeConditionDetails)
 }
 
 func extractKeyAndParamsFromCacheKey(cacheKey string) (string, *paging.EndpointStatusParams, error) {
 	parts := strings.Split(cacheKey, "-")
-	if len(parts) < 5 {
+	if len(parts) < 6 {
 		return "", nil, fmt.Errorf("invalid cache key: %s", cacheKey)
 	}
 	params := &paging.EndpointStatusParams{}
 	var err error
-	if params.EventsPage, err = strconv.Atoi(parts[len(parts)-4]); err != nil {
+	if params.EventsPage, err = strconv.Atoi(parts[len(parts)-5]); err != nil {
 		return "", nil, fmt.Errorf("invalid cache key: %w", err)
 	}
-	if params.EventsPageSize, err = strconv.Atoi(parts[len(parts)-3]); err != nil {
+	if params.EventsPageSize, err = strconv.Atoi(parts[len(parts)-4]); err != nil {
 		return "", nil, fmt.Errorf("invalid cache key: %w", err)
 	}
-	if params.ResultsPage, err = strconv.Atoi(parts[len(parts)-2]); err != nil {
+	if params.ResultsPage, err = strconv.Atoi(parts[len(parts)-3]); err != nil {
 		return "", nil, fmt.Errorf("invalid cache key: %w", err)
 	}
-	if params.ResultsPageSize, err = strconv.Atoi(parts[len(parts)-1]); err != nil {
+	if params.ResultsPageSize, err = strconv.Atoi(parts[len(parts)-2]); err != nil {
 		return "", nil, fmt.Errorf("invalid cache key: %w", err)
 	}
-	return strings.Join(parts[:len(parts)-4], "-"), params, nil
+	if params.ExcludeConditionDetails, err = strconv.ParseBool(parts[len(parts)-1]); err != nil {
+		return "", nil, fmt.Errorf("invalid cache key: %w", err)
+	}
+	return strings.Join(parts[:len(parts)-5], "-"), params, nil
 }
 
 // GetAllSuiteStatuses returns all monitored suite statuses
