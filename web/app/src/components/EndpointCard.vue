@@ -180,7 +180,7 @@ const handleMouseLeave = (result, event) => {
 
 const handleClick = (result, event, index) => {
   if (result.conditionResults?.length) {
-    emit('showTooltip', result, event, 'details')
+    emit('showTooltip', result, event, 'details', props.endpoint.key)
     return
   }
   // Clear selections in other cards first

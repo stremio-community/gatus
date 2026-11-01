@@ -143,7 +143,13 @@ const u=({name:t,iconNode:e,absoluteStrokeWidth:n,"absolute-stroke-width":o,stro
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
- */const r=(0,i.Z)("info",[["circle",{cx:"12",cy:"12",r:"10",key:"1mglay"}],["path",{d:"M12 16v-4",key:"1dtifu"}],["path",{d:"M12 8h.01",key:"e9boi3"}]])},135:function(t,e,n){n.d(e,{Z:function(){return r}});var i=n(264);
+ */const r=(0,i.Z)("info",[["circle",{cx:"12",cy:"12",r:"10",key:"1mglay"}],["path",{d:"M12 16v-4",key:"1dtifu"}],["path",{d:"M12 8h.01",key:"e9boi3"}]])},664:function(t,e,n){n.d(e,{Z:function(){return r}});var i=n(264);
+/**
+ * @license lucide-vue-next v0.539.0 - ISC
+ *
+ * This source code is licensed under the ISC license.
+ * See the LICENSE file in the root directory of this source tree.
+ */const r=(0,i.Z)("loader-circle",[["path",{d:"M21 12a9 9 0 1 1-6.219-8.56",key:"13zald"}]])},135:function(t,e,n){n.d(e,{Z:function(){return r}});var i=n(264);
 /**
  * @license lucide-vue-next v0.539.0 - ISC
  *

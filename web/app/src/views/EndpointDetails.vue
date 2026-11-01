@@ -379,8 +379,8 @@ const changePage = (page) => {
   fetchData()
 }
 
-const showTooltip = (result, event, action = 'hover') => {
-  emit('showTooltip', result, event, action)
+const showTooltip = (result, event, action = 'hover', endpointKey) => {
+  emit('showTooltip', result, event, action, endpointKey)
 }
 
 const prettifyTimestamp = (timestamp) => {

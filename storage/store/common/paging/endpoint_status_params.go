@@ -6,6 +6,9 @@ type EndpointStatusParams struct {
 	EventsPageSize  int // Size of the event page
 	ResultsPage     int // Number of the result page
 	ResultsPageSize int // Size of the result page
+
+	// ExcludeConditionDetails leaves out condition result details, which make up most of a result's size and are only needed for a single result's details dialog
+	ExcludeConditionDetails bool
 }
 
 // NewEndpointStatusParams creates a new EndpointStatusParams
@@ -24,5 +27,11 @@ func (params *EndpointStatusParams) WithEvents(page, pageSize int) *EndpointStat
 func (params *EndpointStatusParams) WithResults(page, pageSize int) *EndpointStatusParams {
 	params.ResultsPage = page
 	params.ResultsPageSize = pageSize
+	return params
+}
+
+// WithoutConditionDetails sets ExcludeConditionDetails
+func (params *EndpointStatusParams) WithoutConditionDetails() *EndpointStatusParams {
+	params.ExcludeConditionDetails = true
 	return params
 }

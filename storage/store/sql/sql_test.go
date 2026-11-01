@@ -495,7 +495,7 @@ func TestStore_InvalidTransaction(t *testing.T) {
 	if _, err := store.getEndpointEventsByEndpointID(tx, 1, 1, 50); err == nil {
 		t.Error("should've returned an error, because the transaction was already committed")
 	}
-	if _, err := store.getEndpointResultsByEndpointID(tx, 1, 1, 50); err == nil {
+	if _, err := store.getEndpointResultsByEndpointID(tx, 1, 1, 50, true); err == nil {
 		t.Error("should've returned an error, because the transaction was already committed")
 	}
 	if err := store.deleteOldEndpointEvents(tx, 1); err == nil {
@@ -651,39 +651,43 @@ func TestCacheKey(t *testing.T) {
 		{
 			endpointKey:      "simple",
 			params:           paging.EndpointStatusParams{EventsPage: 1, EventsPageSize: 2, ResultsPage: 3, ResultsPageSize: 4},
-			expectedCacheKey: "simple-1-2-3-4",
+			expectedCacheKey: "simple-1-2-3-4-false",
 			wantErr:          false,
 		},
 		{
 			endpointKey:      "with-hyphen",
 			params:           paging.EndpointStatusParams{EventsPage: 0, EventsPageSize: 0, ResultsPage: 1, ResultsPageSize: 20},
-			expectedCacheKey: "with-hyphen-0-0-1-20",
+			expectedCacheKey: "with-hyphen-0-0-1-20-false",
 			wantErr:          false,
 		},
 		{
 			endpointKey:      "with-multiple-hyphens",
-			params:           paging.EndpointStatusParams{EventsPage: 0, EventsPageSize: 0, ResultsPage: 2, ResultsPageSize: 20},
-			expectedCacheKey: "with-multiple-hyphens-0-0-2-20",
+			params:           paging.EndpointStatusParams{EventsPage: 0, EventsPageSize: 0, ResultsPage: 2, ResultsPageSize: 20, ExcludeConditionDetails: true},
+			expectedCacheKey: "with-multiple-hyphens-0-0-2-20-true",
 			wantErr:          false,
 		},
 		{
-			overrideCacheKey: "invalid-a-2-3-4",
+			overrideCacheKey: "invalid-a-2-3-4-false",
 			wantErr:          true,
 		},
 		{
-			overrideCacheKey: "invalid-1-a-3-4",
+			overrideCacheKey: "invalid-1-a-3-4-false",
 			wantErr:          true,
 		},
 		{
-			overrideCacheKey: "invalid-1-2-a-4",
+			overrideCacheKey: "invalid-1-2-a-4-false",
 			wantErr:          true,
 		},
 		{
-			overrideCacheKey: "invalid-1-2-3-a",
+			overrideCacheKey: "invalid-1-2-3-a-false",
 			wantErr:          true,
 		},
 		{
-			overrideCacheKey: "notenoughhyphen1-2-3-4",
+			overrideCacheKey: "notenoughhyphen1-2-3-4-false",
+			wantErr:          true,
+		},
+		{
+			overrideCacheKey: "invalid-1-2-3-4-a",
 			wantErr:          true,
 		},
 	}
@@ -721,6 +725,9 @@ func TestCacheKey(t *testing.T) {
 			}
 			if extractedParams.ResultsPageSize != scenario.params.ResultsPageSize {
 				t.Errorf("expected ResultsPageSize %d, got %d", scenario.params.ResultsPageSize, extractedParams.ResultsPageSize)
+			}
+			if extractedParams.ExcludeConditionDetails != scenario.params.ExcludeConditionDetails {
+				t.Errorf("expected ExcludeConditionDetails %t, got %t", scenario.params.ExcludeConditionDetails, extractedParams.ExcludeConditionDetails)
 			}
 		})
 	}
@@ -1052,4 +1059,53 @@ func TestStore_ConditionResultDetails(t *testing.T) {
 	if *pushed[0].Details[0] != (endpoint.ConditionResultDetail{Label: "Attempt", Value: "WARP · HTTP 403"}) || *pushed[0].Details[1] != (endpoint.ConditionResultDetail{Label: "Attempt", Value: "direct · HTTP 200"}) {
 		t.Errorf("expected details in pushed order, got %+v, %+v", *pushed[0].Details[0], *pushed[0].Details[1])
 	}
+}
+
+func TestStore_WithoutConditionDetails(t *testing.T) {
+	store, _ := NewStore("sqlite", t.TempDir()+"/TestStore_WithoutConditionDetails.db", true, storage.DefaultMaximumNumberOfResults, storage.DefaultMaximumNumberOfEvents)
+	defer store.Close()
+	insertResultWithDetails := func(timestamp time.Time) {
+		result := testUnsuccessfulResult
+		result.Timestamp = timestamp
+		result.ConditionResults = []*endpoint.ConditionResult{
+			{Condition: "stream: 0 of 12 valid", Success: false, Details: []*endpoint.ConditionResultDetail{{Label: "Reason", Value: "socket hang up"}}},
+		}
+		if err := store.InsertEndpointResult(&testEndpoint, &result); err != nil {
+			t.Fatal(err)
+		}
+	}
+	countDetails := func(results []*endpoint.Result) (conditionResults, details int) {
+		for _, result := range results {
+			for _, conditionResult := range result.ConditionResults {
+				conditionResults++
+				details += len(conditionResult.Details)
+			}
+		}
+		return
+	}
+	assertStatuses := func(expectedResults int) {
+		t.Helper()
+		withDetails, err := store.GetEndpointStatusByKey(testEndpoint.Key(), paging.NewEndpointStatusParams().WithResults(1, 10))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if conditionResults, details := countDetails(withDetails.Results); conditionResults != expectedResults || details != expectedResults {
+			t.Errorf("expected %d condition results with 1 detail each, got %d condition results and %d details", expectedResults, conditionResults, details)
+		}
+		statuses, err := store.GetAllEndpointStatuses(paging.NewEndpointStatusParams().WithResults(1, 10).WithoutConditionDetails())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(statuses) != 1 {
+			t.Fatalf("expected 1 endpoint status, got %d", len(statuses))
+		}
+		if conditionResults, details := countDetails(statuses[0].Results); conditionResults != expectedResults || details != 0 {
+			t.Errorf("expected %d condition results without details, got %d condition results and %d details", expectedResults, conditionResults, details)
+		}
+	}
+	insertResultWithDetails(now.Add(-time.Minute))
+	assertStatuses(1)
+	// Inserting refreshes both cache entries from their cache keys, so each must keep its own parameters.
+	insertResultWithDetails(now)
+	assertStatuses(2)
 }
