@@ -2,8 +2,11 @@ package discord
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/TwiN/gatus/v5/alerting/alert"
 	"github.com/TwiN/gatus/v5/client"
@@ -262,6 +265,114 @@ func TestAlertProvider_buildRequestBody(t *testing.T) {
 	}
 }
 
+func TestAlertProvider_buildRequestBodyWithComponentsV2(t *testing.T) {
+	description := "description-1"
+	timestamp := time.Unix(1700000000, 0)
+	failing := []*endpoint.ConditionResult{
+		{Condition: "[CONNECTED] == true", Success: true},
+		{Condition: "[STATUS] == 200", Success: false},
+		{Condition: "[BODY] != \"\"", Success: false},
+	}
+	scenarios := []struct {
+		Name             string
+		Config           Config
+		Endpoint         endpoint.Endpoint
+		Alert            alert.Alert
+		ConditionResults []*endpoint.ConditionResult
+		Hostname         string
+		Timestamp        time.Time
+		Resolved         bool
+		ExpectedBody     string
+	}{
+		{
+			Name:             "triggered",
+			Config:           Config{ComponentsV2: true, Title: "ignored"},
+			Endpoint:         endpoint.Endpoint{Name: "endpoint-name", Group: "  group"},
+			Alert:            alert.Alert{Description: &description},
+			ConditionResults: failing,
+			Hostname:         "example.org",
+			Timestamp:        timestamp,
+			ExpectedBody:     `{"flags":32768,"components":[{"type":17,"accent_color":15158332,"components":[{"type":10,"content":"**endpoint-name** · group"},{"type":10,"content":"-# description-1 · \u003ct:1700000000:R\u003e"},{"type":10,"content":"❌ ` + "`[STATUS] == 200`" + `\n❌ ` + "`[BODY] != \\\"\\\"`" + `"}]}]}`,
+		},
+		{
+			Name:             "resolved",
+			Config:           Config{ComponentsV2: true},
+			Endpoint:         endpoint.Endpoint{Name: "endpoint-name"},
+			ConditionResults: []*endpoint.ConditionResult{{Condition: "[STATUS] == 200", Success: true}},
+			Hostname:         "example.org",
+			Timestamp:        timestamp,
+			Resolved:         true,
+			ExpectedBody:     `{"flags":32768,"components":[{"type":17,"accent_color":3066993,"components":[{"type":10,"content":"**endpoint-name**"},{"type":10,"content":"-# example.org · \u003ct:1700000000:R\u003e"}]}]}`,
+		},
+		{
+			Name:             "triggered-without-subtext",
+			Config:           Config{ComponentsV2: true},
+			Endpoint:         endpoint.Endpoint{Name: "endpoint-name"},
+			ConditionResults: []*endpoint.ConditionResult{{Condition: "[STATUS] == 200", Success: false}},
+			ExpectedBody:     `{"flags":32768,"components":[{"type":17,"accent_color":15158332,"components":[{"type":10,"content":"**endpoint-name**"},{"type":10,"content":"❌ ` + "`[STATUS] == 200`" + `"}]}]}`,
+		},
+		{
+			Name:         "triggered-with-message-content-and-status-page-url",
+			Config:       Config{ComponentsV2: true, MessageContent: "<@123456789>", StatusPageURL: "https://status.example.org/"},
+			Endpoint:     endpoint.Endpoint{Name: "endpoint-name", Group: "group"},
+			ExpectedBody: `{"flags":32768,"components":[{"type":10,"content":"\u003c@123456789\u003e"},{"type":17,"accent_color":15158332,"components":[{"type":10,"content":"**endpoint-name** · group"},{"type":1,"components":[{"type":2,"style":5,"label":"View on status page","url":"https://status.example.org/endpoints/group_endpoint-name"}]}]}]}`,
+		},
+	}
+	for _, scenario := range scenarios {
+		t.Run(scenario.Name, func(t *testing.T) {
+			body := (&AlertProvider{}).buildRequestBody(
+				&scenario.Config,
+				&scenario.Endpoint,
+				&scenario.Alert,
+				&endpoint.Result{ConditionResults: scenario.ConditionResults, Hostname: scenario.Hostname, Timestamp: scenario.Timestamp},
+				scenario.Resolved,
+			)
+			if string(body) != scenario.ExpectedBody {
+				t.Errorf("expected:\n%s\ngot:\n%s", scenario.ExpectedBody, body)
+			}
+		})
+	}
+}
+
+func TestAlertProvider_buildRequestBodyWithComponentsV2CapsFailedConditions(t *testing.T) {
+	var conditionResults []*endpoint.ConditionResult
+	for i := 0; i < maximumFailedConditionLines+3; i++ {
+		conditionResults = append(conditionResults, &endpoint.ConditionResult{Condition: fmt.Sprintf("[STATUS] == %d", i), Success: false})
+	}
+	var body ComponentsV2Body
+	raw := (&AlertProvider{}).buildRequestBody(&Config{ComponentsV2: true}, &endpoint.Endpoint{Name: "endpoint-name"}, &alert.Alert{}, &endpoint.Result{ConditionResults: conditionResults}, false)
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatal("expected body to be valid JSON, got error:", err.Error())
+	}
+	lines := strings.Split(body.Components[0].Components[1].Content, "\n")
+	if len(lines) != maximumFailedConditionLines+1 {
+		t.Fatalf("expected %d lines, got %d", maximumFailedConditionLines+1, len(lines))
+	}
+	if last := lines[len(lines)-1]; last != "+3 more" {
+		t.Errorf("expected last line to be %q, got %q", "+3 more", last)
+	}
+}
+
+func TestConfig_requestURL(t *testing.T) {
+	scenarios := []struct {
+		Name     string
+		Config   Config
+		Expected string
+	}{
+		{Name: "embed", Config: Config{WebhookURL: "https://discord.com/api/webhooks/1/token"}, Expected: "https://discord.com/api/webhooks/1/token"},
+		{Name: "components-v2", Config: Config{WebhookURL: "https://discord.com/api/webhooks/1/token", ComponentsV2: true}, Expected: "https://discord.com/api/webhooks/1/token?with_components=true"},
+		{Name: "components-v2-with-query", Config: Config{WebhookURL: "https://discord.com/api/webhooks/1/token?thread_id=2", ComponentsV2: true}, Expected: "https://discord.com/api/webhooks/1/token?thread_id=2&with_components=true"},
+		{Name: "components-v2-already-set", Config: Config{WebhookURL: "https://discord.com/api/webhooks/1/token?with_components=true", ComponentsV2: true}, Expected: "https://discord.com/api/webhooks/1/token?with_components=true"},
+	}
+	for _, scenario := range scenarios {
+		t.Run(scenario.Name, func(t *testing.T) {
+			if got := scenario.Config.requestURL(); got != scenario.Expected {
+				t.Errorf("expected %s, got %s", scenario.Expected, got)
+			}
+		})
+	}
+}
+
 func TestAlertProvider_GetDefaultAlert(t *testing.T) {
 	if (&AlertProvider{DefaultAlert: &alert.Alert{}}).GetDefaultAlert() == nil {
 		t.Error("expected default alert to be not nil")
@@ -377,6 +488,21 @@ func TestAlertProvider_GetConfig(t *testing.T) {
 			InputAlert:     alert.Alert{ProviderOverride: map[string]any{"message-content": "<@999999999>"}},
 			ExpectedOutput: Config{WebhookURL: "http://example.com", MessageContent: "<@999999999>"},
 		},
+		{
+			Name: "provider-with-components-v2-group-override",
+			Provider: AlertProvider{
+				DefaultConfig: Config{WebhookURL: "http://example.com"},
+				Overrides: []Override{
+					{
+						Group:  "group",
+						Config: Config{WebhookURL: "http://group-example.com", ComponentsV2: true, StatusPageURL: "https://status.example.org"},
+					},
+				},
+			},
+			InputGroup:     "group",
+			InputAlert:     alert.Alert{},
+			ExpectedOutput: Config{WebhookURL: "http://group-example.com", ComponentsV2: true, StatusPageURL: "https://status.example.org"},
+		},
 	}
 	for _, scenario := range scenarios {
 		t.Run(scenario.Name, func(t *testing.T) {
@@ -389,6 +515,12 @@ func TestAlertProvider_GetConfig(t *testing.T) {
 			}
 			if got.MessageContent != scenario.ExpectedOutput.MessageContent {
 				t.Errorf("expected message content to be %s, got %s", scenario.ExpectedOutput.MessageContent, got.MessageContent)
+			}
+			if got.ComponentsV2 != scenario.ExpectedOutput.ComponentsV2 {
+				t.Errorf("expected components-v2 to be %t, got %t", scenario.ExpectedOutput.ComponentsV2, got.ComponentsV2)
+			}
+			if got.StatusPageURL != scenario.ExpectedOutput.StatusPageURL {
+				t.Errorf("expected status page URL to be %s, got %s", scenario.ExpectedOutput.StatusPageURL, got.StatusPageURL)
 			}
 			// Test ValidateOverrides as well, since it really just calls GetConfig
 			if err = scenario.Provider.ValidateOverrides(scenario.InputGroup, &scenario.InputAlert); err != nil {
