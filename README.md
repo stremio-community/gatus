@@ -394,7 +394,7 @@ POST /api/v1/endpoints/{key}/external?success=false
 ```
 Where:
 - `conditionResults` (optional): the conditions that were evaluated on your end. Each entry requires a non-empty `condition` of at most 1024 characters and a `success` boolean, with a maximum of 50 entries per request.
-- `conditionResults[].details` (optional): label/value pairs explaining how the condition was evaluated, shown in pushed order in the result's details dialog on the dashboard. Each entry requires a non-empty `label` of at most 64 characters and a `value` of at most 512 characters, with a maximum of 20 entries per condition.
+- `conditionResults[].details` (optional): label/value pairs explaining how the condition was evaluated, shown in pushed order in the result's details dialog on the dashboard, and under failed conditions in Discord alerts for the labels listed in `alerting.discord.detail-labels`. Each entry requires a non-empty `label` of at most 64 characters and a `value` of at most 512 characters, with a maximum of 20 entries per condition.
   `/api/v1/endpoints/statuses` leaves `details` out, since every endpoint's results would carry them; `/api/v1/endpoints/{key}/statuses` includes them.
 
 The body is entirely optional: a request without one behaves exactly like it did before.
@@ -1079,6 +1079,7 @@ endpoints:
 | `alerting.discord.message-content`   | Message content to send before the embed (useful for pinging users/roles, e.g. `<@123>`)   | `""`                                |
 | `alerting.discord.components-v2`     | Send the alert as [Components V2](https://discord.com/developers/docs/components/reference) instead of an embed. Ignores `title`. | `false` |
 | `alerting.discord.status-page-url`   | Base URL of the status page. With `components-v2`, adds a button linking to the endpoint's page. | `""` |
+| `alerting.discord.detail-labels`     | With `components-v2`, labels of the [condition result details](#external-endpoints) to show under each failed condition, in the order they were pushed. | `[]` |
 | `alerting.discord.default-alert`     | Default alert configuration. <br />See [Setting a default alert](#setting-a-default-alert) | N/A                                 |
 | `alerting.discord.overrides`         | List of overrides that may be prioritized over the default configuration                   | `[]`                                |
 | `alerting.discord.overrides[].group` | Endpoint group for which the configuration will be overridden by this configuration        | `""`                                |
