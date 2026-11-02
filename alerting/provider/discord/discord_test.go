@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +27,10 @@ func TestAlertProvider_Validate(t *testing.T) {
 	validProvider := AlertProvider{DefaultConfig: Config{WebhookURL: "http://example.com"}}
 	if err := validProvider.Validate(); err != nil {
 		t.Error("provider should've been valid")
+	}
+	editingEmbedsProvider := AlertProvider{DefaultConfig: Config{WebhookURL: "http://example.com", EditOnResolved: true}}
+	if err := editingEmbedsProvider.Validate(); err != ErrEditOnResolvedRequiresComponentsV2 {
+		t.Errorf("expected %v, got %v", ErrEditOnResolvedRequiresComponentsV2, err)
 	}
 }
 
@@ -443,20 +449,151 @@ func TestAlertProvider_SendWithRejectedLogo(t *testing.T) {
 	}
 }
 
+// snowflake returns the ID of a Discord message sent at sentAt.
+func snowflake(sentAt time.Time) string {
+	return strconv.FormatUint(uint64(sentAt.UnixMilli()-discordEpoch)<<22, 10)
+}
+
+type discordRequest struct {
+	Method string
+	URL    string
+	Body   string
+}
+
+// mockDiscord records every request, answers a GET with message or a 404 when it is empty, and anything else with messageID.
+func mockDiscord(t *testing.T, message string, messageID string) *[]discordRequest {
+	t.Cleanup(func() { client.InjectHTTPClient(nil) })
+	var requests []discordRequest
+	client.InjectHTTPClient(&http.Client{Transport: test.MockRoundTripper(func(r *http.Request) *http.Response {
+		var body []byte
+		if r.Body != nil {
+			body, _ = io.ReadAll(r.Body)
+		}
+		requests = append(requests, discordRequest{Method: r.Method, URL: r.URL.String(), Body: string(body)})
+		if r.Method == http.MethodGet && len(message) == 0 {
+			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader(`{"message":"Unknown Message"}`))}
+		}
+		if r.Method == http.MethodGet {
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(message))}
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"id":"` + messageID + `"}`))}
+	})})
+	return &requests
+}
+
+func TestAlertProvider_SendWithEditOnResolved(t *testing.T) {
+	triggeredAt := time.Unix(1700000000, 0)
+	resolvedAt := triggeredAt.Add(83 * time.Minute)
+	messageID := snowflake(triggeredAt)
+	cfg := Config{WebhookURL: "https://discord.com/api/webhooks/1/token", ComponentsV2: true, EditOnResolved: true, StatusPageURL: "https://status.example.org"}
+	ep := &endpoint.Endpoint{Name: "endpoint-name"}
+	failed := &endpoint.Result{
+		ConditionResults: []*endpoint.ConditionResult{{Condition: "[STATUS] == 200", Success: false}},
+		Hostname:         "example.org",
+		Logo:             "https://example.org/logo.png",
+		Timestamp:        triggeredAt,
+	}
+	triggeredMessage := string((&AlertProvider{}).buildRequestBody(&cfg, ep, &alert.Alert{}, failed, false))
+	resolved := &endpoint.Result{Hostname: "example.org", Timestamp: resolvedAt, Success: true}
+
+	t.Run("triggered-keeps-message-id", func(t *testing.T) {
+		requests := mockDiscord(t, "", messageID)
+		endpointAlert := &alert.Alert{}
+		if err := (&AlertProvider{DefaultConfig: cfg}).Send(ep, endpointAlert, failed, false); err != nil {
+			t.Fatal("unexpected error:", err)
+		}
+		if len(*requests) != 1 || (*requests)[0].URL != "https://discord.com/api/webhooks/1/token?wait=true&with_components=true" {
+			t.Fatalf("expected a single post that waits for the message, got %v", *requests)
+		}
+		if endpointAlert.ResolveKey != messageID {
+			t.Errorf("expected resolve key %s, got %s", messageID, endpointAlert.ResolveKey)
+		}
+	})
+
+	t.Run("resolved-edits-message", func(t *testing.T) {
+		requests := mockDiscord(t, `{"id":"`+messageID+`",`+strings.TrimPrefix(triggeredMessage, `{"flags":32768,`), "")
+		endpointAlert := &alert.Alert{ResolveKey: messageID}
+		if err := (&AlertProvider{DefaultConfig: cfg}).Send(ep, endpointAlert, resolved, true); err != nil {
+			t.Fatal("unexpected error:", err)
+		}
+		if len(*requests) != 2 || (*requests)[0].Method != http.MethodGet || (*requests)[1].Method != http.MethodPatch {
+			t.Fatalf("expected a get then a patch, got %v", *requests)
+		}
+		messageURL := "https://discord.com/api/webhooks/1/token/messages/" + messageID + "?with_components=true"
+		if (*requests)[1].URL != messageURL {
+			t.Errorf("expected patch to %s, got %s", messageURL, (*requests)[1].URL)
+		}
+		expected := `{"components":[{"type":17,"accent_color":3066993,"components":[{"type":9,"components":[{"type":10,"content":"**endpoint-name**"},{"type":10,"content":"-# example.org · ✅ Recovered \u003ct:1700004980:R\u003e · down for 1h 23m"},{"type":10,"content":"` + thumbnailAlignmentPadding + `"}],"accessory":{"type":11,"media":{"url":"https://example.org/logo.png"}}},{"type":10,"content":"❌ ` + "`[STATUS] == 200`" + `"},{"type":1,"components":[{"type":2,"style":5,"label":"View on status page","url":"https://status.example.org/endpoints/_endpoint-name"}]}]}]}`
+		if (*requests)[1].Body != expected {
+			t.Errorf("expected:\n%s\ngot:\n%s", expected, (*requests)[1].Body)
+		}
+		if endpointAlert.ResolveKey != "" {
+			t.Errorf("expected resolve key to be cleared, got %s", endpointAlert.ResolveKey)
+		}
+	})
+
+	t.Run("resolved-skips-deleted-message", func(t *testing.T) {
+		requests := mockDiscord(t, "", "")
+		if err := (&AlertProvider{DefaultConfig: cfg}).Send(ep, &alert.Alert{ResolveKey: messageID}, resolved, true); err != nil {
+			t.Fatal("unexpected error:", err)
+		}
+		if len(*requests) != 1 || (*requests)[0].Method != http.MethodGet {
+			t.Errorf("expected only a get, got %v", *requests)
+		}
+	})
+
+	t.Run("resolved-without-message-id-posts", func(t *testing.T) {
+		requests := mockDiscord(t, "", "")
+		if err := (&AlertProvider{DefaultConfig: cfg}).Send(ep, &alert.Alert{}, resolved, true); err != nil {
+			t.Fatal("unexpected error:", err)
+		}
+		if len(*requests) != 1 || (*requests)[0].Method != http.MethodPost || (*requests)[0].URL != "https://discord.com/api/webhooks/1/token?with_components=true" {
+			t.Errorf("expected a single post that doesn't wait, got %v", *requests)
+		}
+	})
+
+	t.Run("resolved-unrecognized-message-posts", func(t *testing.T) {
+		requests := mockDiscord(t, `{"id":"`+messageID+`","components":[{"type":10,"content":"something else"}]}`, "")
+		if err := (&AlertProvider{DefaultConfig: cfg}).Send(ep, &alert.Alert{ResolveKey: messageID}, resolved, true); err != nil {
+			t.Fatal("unexpected error:", err)
+		}
+		if len(*requests) != 2 || (*requests)[1].Method != http.MethodPost {
+			t.Errorf("expected a get then a post, got %v", *requests)
+		}
+	})
+}
+
+func TestFormatDowntime(t *testing.T) {
+	scenarios := map[time.Duration]string{
+		20 * time.Second:           "<1m",
+		23 * time.Minute:           "23m",
+		83 * time.Minute:           "1h 23m",
+		(26*60 + 10) * time.Minute: "1d 2h",
+	}
+	for downtime, expected := range scenarios {
+		if got := formatDowntime(downtime); got != expected {
+			t.Errorf("expected %s for %s, got %s", expected, downtime, got)
+		}
+	}
+}
+
 func TestConfig_requestURL(t *testing.T) {
 	scenarios := []struct {
 		Name     string
 		Config   Config
+		Path     string
+		Params   url.Values
 		Expected string
 	}{
 		{Name: "embed", Config: Config{WebhookURL: "https://discord.com/api/webhooks/1/token"}, Expected: "https://discord.com/api/webhooks/1/token"},
 		{Name: "components-v2", Config: Config{WebhookURL: "https://discord.com/api/webhooks/1/token", ComponentsV2: true}, Expected: "https://discord.com/api/webhooks/1/token?with_components=true"},
 		{Name: "components-v2-with-query", Config: Config{WebhookURL: "https://discord.com/api/webhooks/1/token?thread_id=2", ComponentsV2: true}, Expected: "https://discord.com/api/webhooks/1/token?thread_id=2&with_components=true"},
 		{Name: "components-v2-already-set", Config: Config{WebhookURL: "https://discord.com/api/webhooks/1/token?with_components=true", ComponentsV2: true}, Expected: "https://discord.com/api/webhooks/1/token?with_components=true"},
+		{Name: "message-with-params", Config: Config{WebhookURL: "https://discord.com/api/webhooks/1/token?thread_id=2", ComponentsV2: true}, Path: "/messages/3", Params: url.Values{"wait": {"true"}}, Expected: "https://discord.com/api/webhooks/1/token/messages/3?thread_id=2&wait=true&with_components=true"},
 	}
 	for _, scenario := range scenarios {
 		t.Run(scenario.Name, func(t *testing.T) {
-			if got := scenario.Config.requestURL(); got != scenario.Expected {
+			if got := scenario.Config.requestURL(scenario.Path, scenario.Params); got != scenario.Expected {
 				t.Errorf("expected %s, got %s", scenario.Expected, got)
 			}
 		})
