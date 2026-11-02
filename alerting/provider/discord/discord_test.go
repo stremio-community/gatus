@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/TwiN/gatus/v5/alerting/alert"
 	"github.com/TwiN/gatus/v5/client"
@@ -281,6 +283,7 @@ func TestAlertProvider_buildRequestBodyWithComponentsV2(t *testing.T) {
 		Alert            alert.Alert
 		ConditionResults []*endpoint.ConditionResult
 		Hostname         string
+		Duration         time.Duration
 		Logo             string
 		Timestamp        time.Time
 		Resolved         bool
@@ -294,7 +297,24 @@ func TestAlertProvider_buildRequestBodyWithComponentsV2(t *testing.T) {
 			ConditionResults: failing,
 			Hostname:         "example.org",
 			Timestamp:        timestamp,
-			ExpectedBody:     `{"flags":32768,"components":[{"type":17,"accent_color":15158332,"components":[{"type":10,"content":"**endpoint-name** · group"},{"type":10,"content":"-# description-1 · \u003ct:1700000000:R\u003e"},{"type":10,"content":"❌ ` + "`[STATUS] == 200`" + `\n❌ ` + "`[BODY] != \\\"\\\"`" + `"}]}]}`,
+			ExpectedBody:     `{"flags":32768,"components":[{"type":17,"accent_color":15158332,"components":[{"type":10,"content":"**endpoint-name** · group"},{"type":10,"content":"-# description-1 · \u003ct:1700000000:R\u003e"},{"type":10,"content":"❌ ` + "`[STATUS] == 200`" + `\n❌ ` + "`[BODY] != \\\"\\\"`" + `\n✅ ` + "`[CONNECTED] == true`" + `"}]}]}`,
+		},
+		{
+			Name:     "triggered-with-duration-and-details",
+			Config:   Config{ComponentsV2: true, DetailLabels: []string{"Reason", "Test ID"}},
+			Endpoint: endpoint.Endpoint{Name: "endpoint-name"},
+			ConditionResults: []*endpoint.ConditionResult{
+				{Condition: "manifest: reachable", Success: true, Details: []*endpoint.ConditionResultDetail{{Label: "Reason", Value: "not shown under a passing condition"}}},
+				{Condition: "stream: 0 of 5 valid", Success: false, Details: []*endpoint.ConditionResultDetail{
+					{Label: "Request", Value: "/stream/movie/tt1.json"},
+					{Label: "Test ID", Value: "tt1"},
+					{Label: "Reason", Value: "HTTP `500`\nupstream"},
+				}},
+			},
+			Hostname:     "example.org",
+			Duration:     1434 * time.Millisecond,
+			Timestamp:    timestamp,
+			ExpectedBody: `{"flags":32768,"components":[{"type":17,"accent_color":15158332,"components":[{"type":10,"content":"**endpoint-name**"},{"type":10,"content":"-# example.org · 1.43s · \u003ct:1700000000:R\u003e"},{"type":10,"content":"❌ ` + "`stream: 0 of 5 valid`" + `\n-# Test ID: ` + "`tt1`" + `\n-# Reason: ` + "`HTTP '500' upstream`" + `\n✅ ` + "`manifest: reachable`" + `"}]}]}`,
 		},
 		{
 			Name:             "resolved",
@@ -336,7 +356,7 @@ func TestAlertProvider_buildRequestBodyWithComponentsV2(t *testing.T) {
 				&scenario.Config,
 				&scenario.Endpoint,
 				&scenario.Alert,
-				&endpoint.Result{ConditionResults: scenario.ConditionResults, Hostname: scenario.Hostname, Logo: scenario.Logo, Timestamp: scenario.Timestamp},
+				&endpoint.Result{ConditionResults: scenario.ConditionResults, Hostname: scenario.Hostname, Duration: scenario.Duration, Logo: scenario.Logo, Timestamp: scenario.Timestamp},
 				scenario.Resolved,
 			)
 			if string(body) != scenario.ExpectedBody {
@@ -346,9 +366,9 @@ func TestAlertProvider_buildRequestBodyWithComponentsV2(t *testing.T) {
 	}
 }
 
-func TestAlertProvider_buildRequestBodyWithComponentsV2CapsFailedConditions(t *testing.T) {
+func TestAlertProvider_buildRequestBodyWithComponentsV2CapsConditions(t *testing.T) {
 	var conditionResults []*endpoint.ConditionResult
-	for i := 0; i < maximumFailedConditionLines+3; i++ {
+	for i := 0; i < maximumConditionLines+3; i++ {
 		conditionResults = append(conditionResults, &endpoint.ConditionResult{Condition: fmt.Sprintf("[STATUS] == %d", i), Success: false})
 	}
 	var body ComponentsV2Body
@@ -357,11 +377,48 @@ func TestAlertProvider_buildRequestBodyWithComponentsV2CapsFailedConditions(t *t
 		t.Fatal("expected body to be valid JSON, got error:", err.Error())
 	}
 	lines := strings.Split(body.Components[0].Components[1].Content, "\n")
-	if len(lines) != maximumFailedConditionLines+1 {
-		t.Fatalf("expected %d lines, got %d", maximumFailedConditionLines+1, len(lines))
+	if len(lines) != maximumConditionLines+1 {
+		t.Fatalf("expected %d lines, got %d", maximumConditionLines+1, len(lines))
 	}
 	if last := lines[len(lines)-1]; last != "+3 more" {
 		t.Errorf("expected last line to be %q, got %q", "+3 more", last)
+	}
+}
+
+func TestFormatConditions_capsDetailsPerCondition(t *testing.T) {
+	var details []*endpoint.ConditionResultDetail
+	for i := 0; i < maximumDetailLinesPerCondition+2; i++ {
+		details = append(details, &endpoint.ConditionResultDetail{Label: "Attempt", Value: fmt.Sprintf("attempt %d", i)})
+	}
+	got := formatConditions(&endpoint.Result{ConditionResults: []*endpoint.ConditionResult{{Condition: "stream: unreachable", Details: details}}}, []string{"Attempt"})
+	lines := strings.Split(got, "\n")
+	if len(lines) != 1+maximumDetailLinesPerCondition+1 {
+		t.Fatalf("expected %d lines, got %d:\n%s", 1+maximumDetailLinesPerCondition+1, len(lines), got)
+	}
+	if last := lines[len(lines)-1]; last != "-# +2 more" {
+		t.Errorf("expected last line to be %q, got %q", "-# +2 more", last)
+	}
+}
+
+func TestFormatConditions_staysWithinCharacterBudget(t *testing.T) {
+	long := strings.Repeat("x", 512)
+	var conditionResults []*endpoint.ConditionResult
+	for i := 0; i < maximumConditionLines; i++ {
+		var details []*endpoint.ConditionResultDetail
+		for j := 0; j < maximumDetailLinesPerCondition; j++ {
+			details = append(details, &endpoint.ConditionResultDetail{Label: "Reason", Value: long})
+		}
+		conditionResults = append(conditionResults, &endpoint.ConditionResult{Condition: fmt.Sprintf("condition %d", i), Details: details})
+	}
+	got := formatConditions(&endpoint.Result{ConditionResults: conditionResults}, []string{"Reason"})
+	if length := utf8.RuneCountInString(got); length > conditionsCharacterBudget+len("\n+10 more") {
+		t.Errorf("expected at most %d characters, got %d", conditionsCharacterBudget, length)
+	}
+	if !strings.Contains(got, "…`") {
+		t.Error("expected long detail values to be truncated")
+	}
+	if !strings.HasSuffix(got, " more") {
+		t.Error("expected the conditions past the budget to be counted as omitted")
 	}
 }
 
@@ -536,6 +593,15 @@ func TestAlertProvider_GetConfig(t *testing.T) {
 			InputAlert:     alert.Alert{},
 			ExpectedOutput: Config{WebhookURL: "http://group-example.com", ComponentsV2: true, StatusPageURL: "https://status.example.org"},
 		},
+		{
+			Name: "provider-with-detail-labels-alert-override",
+			Provider: AlertProvider{
+				DefaultConfig: Config{WebhookURL: "http://example.com", DetailLabels: []string{"Reason"}},
+			},
+			InputGroup:     "",
+			InputAlert:     alert.Alert{ProviderOverride: map[string]any{"detail-labels": []string{"Reason", "Test ID"}}},
+			ExpectedOutput: Config{WebhookURL: "http://example.com", DetailLabels: []string{"Reason", "Test ID"}},
+		},
 	}
 	for _, scenario := range scenarios {
 		t.Run(scenario.Name, func(t *testing.T) {
@@ -554,6 +620,9 @@ func TestAlertProvider_GetConfig(t *testing.T) {
 			}
 			if got.StatusPageURL != scenario.ExpectedOutput.StatusPageURL {
 				t.Errorf("expected status page URL to be %s, got %s", scenario.ExpectedOutput.StatusPageURL, got.StatusPageURL)
+			}
+			if !slices.Equal(got.DetailLabels, scenario.ExpectedOutput.DetailLabels) {
+				t.Errorf("expected detail labels to be %v, got %v", scenario.ExpectedOutput.DetailLabels, got.DetailLabels)
 			}
 			// Test ValidateOverrides as well, since it really just calls GetConfig
 			if err = scenario.Provider.ValidateOverrides(scenario.InputGroup, &scenario.InputAlert); err != nil {

@@ -8,7 +8,10 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
+	"time"
+	"unicode/utf8"
 
 	"github.com/TwiN/gatus/v5/alerting/alert"
 	"github.com/TwiN/gatus/v5/client"
@@ -22,11 +25,12 @@ var (
 )
 
 type Config struct {
-	WebhookURL     string `yaml:"webhook-url"`
-	Title          string `yaml:"title,omitempty"`           // Title of the message that will be sent
-	MessageContent string `yaml:"message-content,omitempty"` // Message content for pinging users or groups (e.g. "<@123456789>" or "<@&987654321>")
-	ComponentsV2   bool   `yaml:"components-v2,omitempty"`   // Whether to send the alert as Components V2 instead of an embed
-	StatusPageURL  string `yaml:"status-page-url,omitempty"` // Base URL of the status page, used to link a Components V2 alert to its endpoint
+	WebhookURL     string   `yaml:"webhook-url"`
+	Title          string   `yaml:"title,omitempty"`           // Title of the message that will be sent
+	MessageContent string   `yaml:"message-content,omitempty"` // Message content for pinging users or groups (e.g. "<@123456789>" or "<@&987654321>")
+	ComponentsV2   bool     `yaml:"components-v2,omitempty"`   // Whether to send the alert as Components V2 instead of an embed
+	StatusPageURL  string   `yaml:"status-page-url,omitempty"` // Base URL of the status page, used to link a Components V2 alert to its endpoint
+	DetailLabels   []string `yaml:"detail-labels,omitempty"`   // Labels of the condition result details a Components V2 alert shows under a failed condition
 }
 
 func (cfg *Config) Validate() error {
@@ -51,6 +55,9 @@ func (cfg *Config) Merge(override *Config) {
 	}
 	if len(override.StatusPageURL) > 0 {
 		cfg.StatusPageURL = override.StatusPageURL
+	}
+	if len(override.DetailLabels) > 0 {
+		cfg.DetailLabels = override.DetailLabels
 	}
 }
 
@@ -220,8 +227,13 @@ const (
 	colorTriggered = 15158332
 	colorResolved  = 3066993
 
-	// maximumFailedConditionLines keeps an alert well under Discord's 4000 character limit on a message's text, past which Discord rejects it.
-	maximumFailedConditionLines = 10
+	maximumConditionLines          = 10
+	maximumDetailLinesPerCondition = 5
+	maximumDetailValueLength       = 150
+
+	// conditionsCharacterBudget keeps an alert well under Discord's 4000 character limit on a message's text, past which Discord rejects it.
+	// Pushed detail values may be far longer than the ones shown, so the cap on lines alone doesn't guarantee that.
+	conditionsCharacterBudget = 3500
 )
 
 // thumbnailAlignmentPadding is a line of blanks, wider than most headings, under a heading that has a thumbnail.
@@ -276,8 +288,8 @@ func buildComponentsV2RequestBody(cfg *Config, ep *endpoint.Endpoint, alert *ale
 		Components:  header,
 	}
 	if !resolved {
-		if failedConditions := formatFailedConditions(result); len(failedConditions) > 0 {
-			container.Components = append(container.Components, Component{Type: componentTypeTextDisplay, Content: failedConditions})
+		if conditions := formatConditions(result, cfg.DetailLabels); len(conditions) > 0 {
+			container.Components = append(container.Components, Component{Type: componentTypeTextDisplay, Content: conditions})
 		}
 	}
 	if len(cfg.StatusPageURL) > 0 {
@@ -307,29 +319,80 @@ func buildSubtext(alert *alert.Alert, result *endpoint.Result) string {
 	} else if len(result.Hostname) > 0 {
 		parts = append(parts, result.Hostname)
 	}
+	if result.Duration > 0 {
+		parts = append(parts, formatDuration(result.Duration))
+	}
 	if !result.Timestamp.IsZero() {
 		parts = append(parts, fmt.Sprintf("<t:%d:R>", result.Timestamp.Unix()))
 	}
 	return strings.Join(parts, " · ")
 }
 
-func formatFailedConditions(result *endpoint.Result) string {
-	var lines []string
-	var omitted int
+func formatDuration(duration time.Duration) string {
+	if duration < time.Second {
+		return duration.Round(time.Millisecond).String()
+	}
+	return duration.Round(10 * time.Millisecond).String()
+}
+
+// formatConditions lists failed conditions before passing ones, each failed one followed by its details whose label is in detailLabels.
+func formatConditions(result *endpoint.Result, detailLabels []string) string {
+	var failed, passed []*endpoint.ConditionResult
 	for _, conditionResult := range result.ConditionResults {
 		if conditionResult.Success {
-			continue
+			passed = append(passed, conditionResult)
+		} else {
+			failed = append(failed, conditionResult)
 		}
-		if len(lines) == maximumFailedConditionLines {
+	}
+	var blocks []string
+	var length, omitted int
+	for _, conditionResult := range append(failed, passed...) {
+		block := formatCondition(conditionResult, detailLabels)
+		blockLength := utf8.RuneCountInString(block) + 1
+		if omitted > 0 || len(blocks) == maximumConditionLines || length+blockLength > conditionsCharacterBudget {
 			omitted++
 			continue
 		}
-		lines = append(lines, fmt.Sprintf("❌ `%s`", conditionResult.Condition))
+		blocks = append(blocks, block)
+		length += blockLength
 	}
 	if omitted > 0 {
-		lines = append(lines, fmt.Sprintf("+%d more", omitted))
+		blocks = append(blocks, fmt.Sprintf("+%d more", omitted))
+	}
+	return strings.Join(blocks, "\n")
+}
+
+func formatCondition(conditionResult *endpoint.ConditionResult, detailLabels []string) string {
+	if conditionResult.Success {
+		return fmt.Sprintf("✅ `%s`", conditionResult.Condition)
+	}
+	lines := []string{fmt.Sprintf("❌ `%s`", conditionResult.Condition)}
+	var shown, omitted int
+	for _, detail := range conditionResult.Details {
+		if detail == nil || !slices.Contains(detailLabels, detail.Label) {
+			continue
+		}
+		if shown == maximumDetailLinesPerCondition {
+			omitted++
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("-# %s: `%s`", detail.Label, formatDetailValue(detail.Value)))
+		shown++
+	}
+	if omitted > 0 {
+		lines = append(lines, fmt.Sprintf("-# +%d more", omitted))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// formatDetailValue fits a value on one line of inline code, which a backtick would end and a newline would break.
+func formatDetailValue(value string) string {
+	value = strings.NewReplacer("`", "'", "\r", " ", "\n", " ").Replace(value)
+	if runes := []rune(value); len(runes) > maximumDetailValueLength {
+		return string(runes[:maximumDetailValueLength-1]) + "…"
+	}
+	return value
 }
 
 // GetDefaultAlert returns the provider's default alert configuration
