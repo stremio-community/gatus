@@ -1079,6 +1079,7 @@ endpoints:
 | `alerting.discord.message-content`   | Message content to send before the embed (useful for pinging users/roles, e.g. `<@123>`)   | `""`                                |
 | `alerting.discord.components-v2`     | Send the alert as [Components V2](https://discord.com/developers/docs/components/reference) instead of an embed. Ignores `title`. | `false` |
 | `alerting.discord.status-page-url`   | Base URL of the status page. With `components-v2`, adds a button linking to the endpoint's page. | `""` |
+| `alerting.discord.edit-on-resolved`  | Resolve an alert by editing its message to show it recovered instead of sending a new one, for alerts with `send-on-resolved`. Falls back to a new message when the alert was triggered before this was enabled. Requires `components-v2`. | `false` |
 | `alerting.discord.detail-labels`     | With `components-v2`, labels of the [condition result details](#external-endpoints) to show under each failed condition, in the order they were pushed. | `[]` |
 | `alerting.discord.default-alert`     | Default alert configuration. <br />See [Setting a default alert](#setting-a-default-alert) | N/A                                 |
 | `alerting.discord.overrides`         | List of overrides that may be prioritized over the default configuration                   | `[]`                                |

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -20,22 +21,27 @@ import (
 )
 
 var (
-	ErrWebhookURLNotSet       = errors.New("webhook-url not set")
-	ErrDuplicateGroupOverride = errors.New("duplicate group override")
+	ErrWebhookURLNotSet                   = errors.New("webhook-url not set")
+	ErrDuplicateGroupOverride             = errors.New("duplicate group override")
+	ErrEditOnResolvedRequiresComponentsV2 = errors.New("edit-on-resolved requires components-v2")
 )
 
 type Config struct {
 	WebhookURL     string   `yaml:"webhook-url"`
-	Title          string   `yaml:"title,omitempty"`           // Title of the message that will be sent
-	MessageContent string   `yaml:"message-content,omitempty"` // Message content for pinging users or groups (e.g. "<@123456789>" or "<@&987654321>")
-	ComponentsV2   bool     `yaml:"components-v2,omitempty"`   // Whether to send the alert as Components V2 instead of an embed
-	StatusPageURL  string   `yaml:"status-page-url,omitempty"` // Base URL of the status page, used to link a Components V2 alert to its endpoint
-	DetailLabels   []string `yaml:"detail-labels,omitempty"`   // Labels of the condition result details a Components V2 alert shows under a failed condition
+	Title          string   `yaml:"title,omitempty"`            // Title of the message that will be sent
+	MessageContent string   `yaml:"message-content,omitempty"`  // Message content for pinging users or groups (e.g. "<@123456789>" or "<@&987654321>")
+	ComponentsV2   bool     `yaml:"components-v2,omitempty"`    // Whether to send the alert as Components V2 instead of an embed
+	StatusPageURL  string   `yaml:"status-page-url,omitempty"`  // Base URL of the status page, used to link a Components V2 alert to its endpoint
+	DetailLabels   []string `yaml:"detail-labels,omitempty"`    // Labels of the condition result details a Components V2 alert shows under a failed condition
+	EditOnResolved bool     `yaml:"edit-on-resolved,omitempty"` // Whether to mark the triggered Components V2 alert as recovered instead of sending a new message
 }
 
 func (cfg *Config) Validate() error {
 	if len(cfg.WebhookURL) == 0 {
 		return ErrWebhookURLNotSet
+	}
+	if cfg.EditOnResolved && !cfg.ComponentsV2 {
+		return ErrEditOnResolvedRequiresComponentsV2
 	}
 	return nil
 }
@@ -59,20 +65,29 @@ func (cfg *Config) Merge(override *Config) {
 	if len(override.DetailLabels) > 0 {
 		cfg.DetailLabels = override.DetailLabels
 	}
+	if override.EditOnResolved {
+		cfg.EditOnResolved = true
+	}
 }
 
-// requestURL returns the webhook URL to post to.
+// requestURL returns the URL of path under the webhook, with params added to the webhook's own query, such as a thread_id.
 // Discord rejects components sent to a webhook that isn't owned by an application unless with_components is set.
-func (cfg *Config) requestURL() string {
-	if !cfg.ComponentsV2 {
+func (cfg *Config) requestURL(path string, params url.Values) string {
+	if !cfg.ComponentsV2 && len(path) == 0 && len(params) == 0 {
 		return cfg.WebhookURL
 	}
 	webhookURL, err := url.Parse(cfg.WebhookURL)
 	if err != nil {
 		return cfg.WebhookURL
 	}
+	webhookURL.Path = strings.TrimSuffix(webhookURL.Path, "/") + path
 	query := webhookURL.Query()
-	query.Set("with_components", "true")
+	for key, values := range params {
+		query[key] = values
+	}
+	if cfg.ComponentsV2 {
+		query.Set("with_components", "true")
+	}
 	webhookURL.RawQuery = query.Encode()
 	return webhookURL.String()
 }
@@ -113,32 +128,83 @@ func (provider *AlertProvider) Send(ep *endpoint.Endpoint, alert *alert.Alert, r
 	if err != nil {
 		return err
 	}
-	statusCode, err := post(cfg, provider.buildRequestBody(cfg, ep, alert, result, resolved))
+	if resolved && cfg.EditOnResolved && len(alert.ResolveKey) > 0 {
+		messageID := alert.ResolveKey
+		alert.ResolveKey = ""
+		if edited, err := editAsResolved(cfg, messageID, alert, result); edited {
+			return err
+		}
+	}
+	// With wait, Discord answers with the message, whose ID is kept to edit it once the alert is resolved.
+	keepMessageID := cfg.EditOnResolved && !resolved
+	var params url.Values
+	if keepMessageID {
+		params = url.Values{"wait": {"true"}}
+	}
+	statusCode, responseBody, err := request(http.MethodPost, cfg.requestURL("", params), provider.buildRequestBody(cfg, ep, alert, result, resolved))
 	if statusCode == http.StatusBadRequest && cfg.ComponentsV2 && len(result.Logo) > 0 {
 		// Discord validates the thumbnail URL, which comes from a third party, so drop it rather than the alert.
 		withoutLogo := *result
 		withoutLogo.Logo = ""
-		_, err = post(cfg, provider.buildRequestBody(cfg, ep, alert, &withoutLogo, resolved))
+		_, responseBody, err = request(http.MethodPost, cfg.requestURL("", params), provider.buildRequestBody(cfg, ep, alert, &withoutLogo, resolved))
+	}
+	if err == nil && keepMessageID {
+		var message Message
+		if json.Unmarshal(responseBody, &message) == nil {
+			alert.ResolveKey = message.ID
+		}
 	}
 	return err
 }
 
-func post(cfg *Config, body []byte) (int, error) {
-	request, err := http.NewRequest(http.MethodPost, cfg.requestURL(), bytes.NewBuffer(body))
-	if err != nil {
-		return 0, err
+// editAsResolved marks the message of a triggered alert as recovered, and returns whether that message was dealt with.
+// A message that was deleted counts as dealt with, while one this provider can't recognize is left for a new message to resolve.
+func editAsResolved(cfg *Config, messageID string, alert *alert.Alert, result *endpoint.Result) (bool, error) {
+	messagePath := "/messages/" + url.PathEscape(messageID)
+	statusCode, responseBody, err := request(http.MethodGet, cfg.requestURL(messagePath, nil), nil)
+	if statusCode == http.StatusNotFound {
+		return true, nil
 	}
-	request.Header.Set("Content-Type", "application/json")
-	response, err := client.GetHTTPClient(nil).Do(request)
 	if err != nil {
-		return 0, err
+		return true, err
+	}
+	var message Message
+	if err := json.Unmarshal(responseBody, &message); err != nil {
+		return false, nil
+	}
+	subtext := findSubtext(message.Components)
+	if subtext == nil {
+		return false, nil
+	}
+	subtext.Content = "-# " + buildRecoveredSubtext(alert, result, messageTimestamp(messageID))
+	container := findContainer(message.Components)
+	container.AccentColor = colorResolved
+	body, _ := json.Marshal(Message{Components: message.Components})
+	statusCode, _, err = request(http.MethodPatch, cfg.requestURL(messagePath, nil), body)
+	if statusCode == http.StatusNotFound {
+		return true, nil
+	}
+	return true, err
+}
+
+func request(method, requestURL string, body []byte) (int, []byte, error) {
+	req, err := http.NewRequest(method, requestURL, bytes.NewBuffer(body))
+	if err != nil {
+		return 0, nil, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	response, err := client.GetHTTPClient(nil).Do(req)
+	if err != nil {
+		return 0, nil, err
 	}
 	defer response.Body.Close()
+	responseBody, _ := io.ReadAll(response.Body)
 	if response.StatusCode > 399 {
-		responseBody, _ := io.ReadAll(response.Body)
-		return response.StatusCode, fmt.Errorf("call to provider alert returned status code %d: %s", response.StatusCode, string(responseBody))
+		return response.StatusCode, responseBody, fmt.Errorf("call to provider alert returned status code %d: %s", response.StatusCode, string(responseBody))
 	}
-	return response.StatusCode, nil
+	return response.StatusCode, responseBody, nil
 }
 
 type Body struct {
@@ -262,6 +328,49 @@ type Media struct {
 	URL string `json:"url"`
 }
 
+// Message is the part of a Discord message this provider reads back, and the body of an edit to it.
+type Message struct {
+	ID         string      `json:"id,omitempty"`
+	Components []Component `json:"components"`
+}
+
+// discordEpoch is the start of time in a Discord snowflake ID, in milliseconds since the Unix epoch.
+const discordEpoch = 1420070400000
+
+// messageTimestamp returns when a message was sent, which its snowflake ID encodes, or the zero time when the ID doesn't parse.
+func messageTimestamp(messageID string) time.Time {
+	snowflake, err := strconv.ParseUint(messageID, 10, 64)
+	if err != nil {
+		return time.Time{}
+	}
+	return time.UnixMilli(int64(snowflake>>22) + discordEpoch)
+}
+
+func findContainer(components []Component) *Component {
+	for i := range components {
+		if components[i].Type == componentTypeContainer {
+			return &components[i]
+		}
+	}
+	return nil
+}
+
+// findSubtext returns the subtext under the heading of a message built by buildComponentsV2RequestBody, or nil when it has none.
+func findSubtext(components []Component) *Component {
+	container := findContainer(components)
+	if container == nil || len(container.Components) == 0 {
+		return nil
+	}
+	header := container.Components
+	if header[0].Type == componentTypeSection {
+		header = header[0].Components
+	}
+	if len(header) < 2 || header[1].Type != componentTypeTextDisplay || !strings.HasPrefix(header[1].Content, "-# ") || header[1].Content == thumbnailAlignmentPadding {
+		return nil
+	}
+	return &header[1]
+}
+
 func buildComponentsV2RequestBody(cfg *Config, ep *endpoint.Endpoint, alert *alert.Alert, result *endpoint.Result, resolved bool) []byte {
 	color := colorTriggered
 	if resolved {
@@ -326,6 +435,38 @@ func buildSubtext(alert *alert.Alert, result *endpoint.Result) string {
 		parts = append(parts, fmt.Sprintf("<t:%d:R>", result.Timestamp.Unix()))
 	}
 	return strings.Join(parts, " · ")
+}
+
+func buildRecoveredSubtext(alert *alert.Alert, result *endpoint.Result, triggeredAt time.Time) string {
+	var parts []string
+	if description := alert.GetDescription(); len(description) > 0 {
+		parts = append(parts, description)
+	} else if len(result.Hostname) > 0 {
+		parts = append(parts, result.Hostname)
+	}
+	resolvedAt := result.Timestamp
+	if resolvedAt.IsZero() {
+		resolvedAt = time.Now()
+	}
+	parts = append(parts, fmt.Sprintf("✅ Recovered <t:%d:R>", resolvedAt.Unix()))
+	if !triggeredAt.IsZero() && resolvedAt.After(triggeredAt) {
+		parts = append(parts, "down for "+formatDowntime(resolvedAt.Sub(triggeredAt)))
+	}
+	return strings.Join(parts, " · ")
+}
+
+func formatDowntime(downtime time.Duration) string {
+	minutes := int(downtime.Round(time.Minute).Minutes())
+	switch {
+	case minutes < 1:
+		return "<1m"
+	case minutes < 60:
+		return fmt.Sprintf("%dm", minutes)
+	case minutes < 24*60:
+		return fmt.Sprintf("%dh %dm", minutes/60, minutes%60)
+	default:
+		return fmt.Sprintf("%dd %dh", minutes/(24*60), minutes%(24*60)/60)
+	}
 }
 
 func formatDuration(duration time.Duration) string {
